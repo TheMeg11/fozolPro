@@ -78,7 +78,14 @@ logging.getLogger().addHandler(ERROR_COUNTER)
 BASE_DIR = Path(__file__).parent
 # Railway: مسیر دیتابیس از Environment Variable (DB_PATH) خوانده می‌شود
 # تا روی Volume دائمی ذخیره شود و با هر deploy از بین نرود.
-DB_PATH = Path(os.environ.get("DB_PATH", "").strip() or (BASE_DIR / "bot_data.db"))
+# v4.6.1 (رفع باگ دیپلوی از ریپو): پیش‌فرض هم‌سو با settings.py → /data/bot_data.db
+# (قبلاً بدون DB_PATH، ربات به BASE_DIR/bot_data.db می‌رفت و مینی‌اپ به /data/bot_data.db
+#  — یعنی دو دیتابیس جدا و از دست رفتن داده‌ها هنگام redeploy!)
+DB_PATH = Path(os.environ.get("DB_PATH", "").strip() or "/data/bot_data.db")
+try:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 # ====== بارگذاری تنظیمات از config.py ======
 TOKEN = config.BOT_TOKEN
