@@ -504,6 +504,9 @@ class Database:
         # استثنا رخ دهد، تراکنش باز می‌ماند و قفل نوشتن دیتابیس «برای همیشه» گیر
         # می‌کند (مینی‌اپ خطای database is locked می‌دهد). واتچ‌داگ بعد از ۶۰ ثانیه
         # آن را rollback می‌کند تا سیستم خودش ترمیم شود.
+        # ── v4.6.2: فلگ توقف واتچ‌داگ — بعد از /restore که conn بسته و نمونه جایگزین می‌شود،
+        # واتچ‌داگ نمونهٔ قدیمی نباید تا ابد روی کانکشن بسته خطا بدهد ──
+        self._shutdown_watchdog = False
         self._txn_watch = threading.Thread(target=self._txn_watchdog, name="db-txn-watchdog", daemon=True)
         self._txn_watch.start()
 
@@ -511,6 +514,8 @@ class Database:
         stuck_since = None
         while True:
             time.sleep(5)
+            if getattr(self, "_shutdown_watchdog", False):
+                break  # v4.6.2: نمونهٔ قدیمی بازنشسته شده — پایان حلقه
             try:
                 if self.conn.in_transaction:
                     if stuck_since is None:
@@ -3826,7 +3831,13 @@ def _swap_database_with_file(new_db_path):
     رفع باگ Errno 18: rename بین فایل‌سیستم‌های متفاوت (Volume و کانتینر) مجاز نیست —
     از shutil.move استفاده می‌کنیم که cross-device را هندل می‌کند."""
     global db
+    old_db = db
     with db._lock:
+        # v4.6.2: واتچ‌داگ نمونهٔ قدیمی را متوقف کن تا بعد از بستن conn حلقهٔ خطا نزند
+        try:
+            old_db._shutdown_watchdog = True
+        except Exception:
+            pass
         db.conn.close()
         tmp_old = BASE_DIR / "bot_data_old.db"
         try: tmp_old.unlink()
@@ -3840,6 +3851,17 @@ def _swap_database_with_file(new_db_path):
             shutil.move(str(DB_PATH), str(tmp_old))
         shutil.move(str(new_db_path), str(DB_PATH))
         db = Database(str(DB_PATH))
+    # ── v4.6.2 (رفع باگ «خطای داخلی سرور» و رتبهٔ غلط مینی‌اپ بعد از /restore):
+    # لایهٔ دیتابیس مینی‌اپ (services.db) هنوز کانکشن‌های thread-local به فایل قدیمی
+    # (rename شده) داشت و دیتابیس بازیابی‌شده ستون‌های نسخهٔ جدید (مثل last_name،
+    # xp و…) را نداشت. بستن همهٔ کانکشن‌ها + اجرای مهاجرت افزایشی روی فایل جدید: ──
+    try:
+        from services import db as _api_db
+        _api_db.close_all()
+        _api_db.migrate()
+        logger.info("restore: miniapp DB layer resynced (connections reopened + migrate) after swap")
+    except Exception:
+        logger.error("restore: miniapp DB resync failed", exc_info=True)
     # بارگذاری مجدد تنظیمات وابسته به دیتابیس
     for _days in VIP_PRICES.keys():
         saved = db.get_vip_price(_days)

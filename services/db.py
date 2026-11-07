@@ -22,6 +22,7 @@ _local = threading.local()
 _write_lock = threading.RLock()
 _all_conns: list[sqlite3.Connection] = []
 _all_lock = threading.Lock()
+_generation = 0  # v4.6.2: با هر close_all زیاد می‌شود تا کانکشن‌های thread-local باطل شوند (بعد از /restore)
 
 
 def _open(path: str) -> sqlite3.Connection:
@@ -42,9 +43,12 @@ def _open(path: str) -> sqlite3.Connection:
 def conn() -> sqlite3.Connection:
     path = settings.DB_PATH
     c = getattr(_local, "conn", None)
-    if c is None or getattr(_local, "path", None) != path:
+    # v4.6.2: چک _generation — اگر close_all() (مثلاً بعد از /restore) اجرا شده باشد،
+    # کانکشن‌های thread-localِ بقیهٔ ترد‌ها به فایل قدیمی/بسته اشاره می‌کنند و باید باز شوند.
+    if (c is None or getattr(_local, "gen", -1) != _generation
+            or getattr(_local, "path", None) != path):
         c = _open(path)
-        _local.conn, _local.path = c, path
+        _local.conn, _local.path, _local.gen = c, path, _generation
     return c
 
 
@@ -304,9 +308,11 @@ def kv_set(key: str, value: str) -> None:
 
 
 def close_all() -> None:
+    global _generation
     with _all_lock:
         for c in _all_conns:
             with contextlib.suppress(Exception):
                 c.close()
         _all_conns.clear()
+    _generation += 1  # v4.6.2: کانکشن‌های کش‌شدهٔ همهٔ ترد‌ها را باطل کن
     _local.__dict__.clear()
