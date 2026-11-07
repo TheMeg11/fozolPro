@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <!-- SDK مینی‌اپ بله: طبق docs.bale.ai باید قبل از هر اسکریپت دیگری بیاید.
+       سرور آدرس را از BALE_SDK_URL جایگزین می‌کند. اگر لود نشود، اپ در حالت دمو بالا می‌آید. -->
+  <script src="https://tapi.bale.ai/miniapp.js?1" data-bale-sdk></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#f2f4f7" />
+  <meta name="color-scheme" content="light dark" />
+  <title>فضول‌یاب | مینی‌اپ بله</title>
+  <link rel="icon" type="image/png" href="img/logo-sm.png" />
+  <link rel="apple-touch-icon" href="img/logo-sm.png" />
+  <link rel="preload" as="image" href="img/logo.png" />
+  <link rel="preload" href="fonts/Vazirmatn-Regular.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/Vazirmatn-Bold.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="app.css" />
+  <!-- fozol-pro: لایهٔ ذرات طلایی VIP -->
+  <link rel="preload" href="gold.js" as="script" />
+  <!-- config.js توسط سرور به‌صورت پویا تولید می‌شود؛ نسخهٔ استاتیک این پوشه برای اجرای بدون بک‌اند است -->
+  <script src="config.js"></script>
+</head>
+<body>
+  <div id="app"></div>
+  <noscript><p style="padding:24px;text-align:center">برای استفاده از مینی‌اپ، جاوااسکریپت را فعال کنید.</p></noscript>
+  <script src="app.js"></script>
+  <script src="gold.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# داده‌ها و تنظیمات محلی — هرگز در ریپو نباشند
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/data/
+uploads/
+avatars/
+
+# سیستم‌عامل و ادیتور
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

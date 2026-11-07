@@ -1,0 +1,9 @@
+pyTelegramBotAPI>=4.14,<5
+requests>=2.31
+jdatetime>=4.1
+Pillow>=10,<13
+fonttools>=4,<5
+anyascii>=0.3,<1
+imageio-ffmpeg>=0.4,<2
+fastapi>=0.110,<1.0
+uvicorn>=0.29,<1.0
