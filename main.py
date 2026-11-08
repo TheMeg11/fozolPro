@@ -361,6 +361,10 @@ for _days in VIP_PRICES.keys():
 # ====== بارگذاری کانال‌های اجباری از دیتابیس ======
 CHANNELS = []
 channel_info = {}
+broken_channels = set()  # کانال‌هایی که ربات نمی‌تواند اعضایشان را بررسی کند (v4.7 — قبل از load)
+# v4.7: تزریق به bot_db برای گزارش روزانه (get_full_daily_report_data)
+import bot_db as _bot_db_mod
+_bot_db_mod.broken_channels = broken_channels
 
 # کلید خاموش/روشن عضویت اجباری — از Environment Variable
 # FORCE_JOIN_ENABLED=0 یا false → عضویت اجباری کاملاً غیرفعال
@@ -658,10 +662,6 @@ def get_user_state(chat_id):
 support_sessions = set()
 support_partners = {}
 admin_reply = {}
-broken_channels = set()
-# v4.7: تزریق به bot_db برای گزارش روزانه (get_full_daily_report_data)
-import bot_db as _bot_db_mod
-_bot_db_mod.broken_channels = broken_channels
 
 # ====== شمارندهٔ پیام‌های ۲۴ ساعت ======
 msg_times = deque()
