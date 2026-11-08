@@ -157,3 +157,80 @@ def payments_of(user_id: int, limit: int = 20) -> list[dict]:
     db.execute("UPDATE payments SET status='failed' WHERE user_id=? AND status='pending' AND created_at < ?", (user_id, iso(now() - timedelta(days=1))))
     return [{"id": f"INV-{r['id']}", "plan_title": titles.get(r["plan_id"], r["plan_id"]), "amount": r["amount"], "status": r["status"], "created_at": r["created_at"]}
             for r in db.rows("SELECT * FROM payments WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit))]
+
+
+# ---------------- v4.9: تنظیمات ویژهٔ VIP (کارگاه کارآگاه ویژه) ----------------
+# همان سه تنظیم منوی «کارگاه کارآگاه ویژه» پنل شیشه‌ای، این‌بار از مینی‌اپ:
+# متن خوش‌آمدگویی، عکس خوش‌آمدگویی (رویت وضعیت — آپلود عکس در چت ربات) و نقاب کارآگاهی.
+MASK_EMOJIS = ["🎭", "🔍", "🕯️", "🌙", "📂", "🔦", "🕵️", "👁️", "🗒️", "📇", "🧥", "🎖️", "🏅", "📰", "☕", "🚬"]
+WELCOME_MAX = 500    # حداکثر طول متن خوش‌آمدگویی
+MASK_EMOJI_MAX = 16  # یک ایموجی (یا ترکیب کوتاه)
+MASK_TEXT_MAX = 32   # لقب نقاب — همان مقیاس لقب‌های لیدربورد
+
+
+def _require_active(user_id: int) -> None:
+    if not is_active(user_id):
+        raise AppError("VIP_REQUIRED", "این تنظیم فقط برای اعضای VIP فعال است.", 403)
+
+
+def _content_error(text: str) -> str | None:
+    """همان فیلتر محتوای ربات (لینک خارجی + واژه‌های نامناسب) — مشترک با پروفایل."""
+    try:
+        from services import anon as _anon
+        return _anon._content_error(text)
+    except Exception:
+        return None
+
+
+def settings_view(user_id: int) -> dict:
+    active = is_active(user_id)
+    u = db.row("SELECT welcome_text, welcome_photo FROM users WHERE user_id=?", (user_id,)) or {}
+    m = db.row("SELECT emoji, mask_text FROM user_mask WHERE user_id=?", (user_id,)) or {}
+    return {
+        "active": active,
+        "welcome": {"text": u.get("welcome_text") or None, "photo_set": bool(u.get("welcome_photo"))},
+        "mask": {"emoji": m.get("emoji") or None, "text": m.get("mask_text") or None},
+        "mask_emojis": list(MASK_EMOJIS),
+        "limits": {"welcome_max": WELCOME_MAX, "mask_emoji_max": MASK_EMOJI_MAX, "mask_text_max": MASK_TEXT_MAX},
+    }
+
+
+def set_welcome_text(user_id: int, text: str | None) -> dict:
+    """ثبت/پاک کردن متن خوش‌آمدگویی — همان ستون users.welcome_text ربات."""
+    _require_active(user_id)
+    if text is None or not str(text).strip():
+        db.execute("UPDATE users SET welcome_text=NULL WHERE user_id=?", (user_id,))
+        return settings_view(user_id)
+    t = str(text).strip()
+    if len(t) > WELCOME_MAX:
+        raise AppError("VALIDATION_ERROR", f"متن خوش‌آمدگویی حداکثر {WELCOME_MAX} کاراکتر است.", 422)
+    bad = _content_error(t)
+    if bad:
+        raise AppError("VALIDATION_ERROR", f"این متن قابل قبول نیست ({bad}).", 422)
+    db.execute("UPDATE users SET welcome_text=? WHERE user_id=?", (t, user_id))
+    return settings_view(user_id)
+
+
+def set_mask(user_id: int, emoji: str, mask_text: str) -> dict:
+    """ثبت نقاب کارآگاهی — همان جدول user_mask ربات (INSERT OR REPLACE)."""
+    _require_active(user_id)
+    e = str(emoji or "").strip()
+    t = str(mask_text or "").strip()
+    if not e:
+        raise AppError("VALIDATION_ERROR", "ایموجی نقاب را انتخاب کن یا خودت تایپ کن.", 422)
+    if len(e) > MASK_EMOJI_MAX:
+        raise AppError("VALIDATION_ERROR", "ایموجی نقاب نامعتبر است.", 422)
+    if len(t) > MASK_TEXT_MAX:
+        raise AppError("VALIDATION_ERROR", f"لقب نقاب حداکثر {MASK_TEXT_MAX} کاراکتر است.", 422)
+    if t:
+        bad = _content_error(t)
+        if bad:
+            raise AppError("VALIDATION_ERROR", f"این لقب قابل قبول نیست ({bad}).", 422)
+    db.execute("INSERT OR REPLACE INTO user_mask (user_id, emoji, mask_text) VALUES (?,?,?)", (user_id, e, t))
+    return settings_view(user_id)
+
+
+def clear_mask(user_id: int) -> dict:
+    _require_active(user_id)
+    db.execute("DELETE FROM user_mask WHERE user_id=?", (user_id,))
+    return settings_view(user_id)

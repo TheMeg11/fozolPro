@@ -358,6 +358,8 @@
         { id: 3, title: 'نظرسنجی ناشناس', bait: 'نظرت درباره من چیه؟ کاملاً ناشناس جواب بده 🤫', code: 'p2Rt8', is_default: false, created_at: iso(NOW - 4 * DAY) }
       ],
       visitors: [], payments: [], support: [], tickets: [], users: [], jobs: {}, nextId: 1000,
+      /* v4.9: تنظیمات ویژهٔ VIP — همان ساختار /api/vip/settings */
+      vipSettings: { welcome: 'سلام رفیق! به تلهٔ فضول‌یاب خوش اومدی 👀', photo: true, mask: { emoji: '🎭', text: 'کارآگاه شب' } },
       challenge: { status: 'idle', hours: 24, reward_days: 3, top: [] },
       forcedChannels: [
         { id: 'mychannel', title: 'کانال رسمی فضول‌یاب', url: '', target: 5000, joins: 3821, added_at: iso(NOW - 60 * DAY), percent: 76 },
@@ -440,6 +442,17 @@
       var active = vipActive();
       var left = active ? Math.max(0, Math.ceil((new Date(db.vip.expires_at) - Date.now()) / DAY)) : 0;
       return { active: active, plan_title: active ? db.vip.plan_title : null, expires_at: active ? db.vip.expires_at : null, days_left: left };
+    }
+    /* v4.9: نمای تنظیمات ویژهٔ VIP — همان قرارداد /api/vip/settings */
+    function vipSettingsView() {
+      var s = db.vipSettings || {};
+      return {
+        active: vipActive(),
+        welcome: { text: s.welcome || null, photo_set: !!s.photo },
+        mask: s.mask ? { emoji: s.mask.emoji || null, text: s.mask.text || null } : { emoji: null, text: null },
+        mask_emojis: ['🎭', '🔍', '🕯️', '🌙', '📂', '🔦', '🕵️', '👁️', '🗒️', '📇', '🧥', '🎖️', '🏅', '📰', '☕', '🚬'],
+        limits: { welcome_max: 500, mask_emoji_max: 16, mask_text_max: 32 }
+      };
     }
     function spinState() {
       /* v4.7: همان ربات — چرخ شانس VIP-only و یک بار در روز */
@@ -563,6 +576,27 @@
         var plan = PLANS.filter(function (p) { return p.id === (b && b.plan_id); })[0]; if (!plan) throw err('VALIDATION_ERROR', 422, 'پلن نامعتبر است.');
         db.payments.unshift({ id: 'INV-' + Math.floor(50000 + Math.random() * 9999), plan_title: plan.title, amount: plan.price, status: 'pending', created_at: iso(Date.now()) });
         return { invoice_sent: true, plan: plan, chat_url: Platform.botLink() };
+      }],
+      /* v4.9: تنظیمات ویژهٔ VIP (دمو) — همان قرارداد /api/vip/settings */
+      ['GET', /^\/vip\/settings$/, function () { return vipSettingsView(); }],
+      ['POST', /^\/vip\/settings\/welcome$/, function (b) {
+        if (!vipActive()) throw err('VIP_REQUIRED', 403, 'این تنظیم فقط برای اعضای VIP فعال است.');
+        if (b && b.clear) db.vipSettings.welcome = null;
+        else {
+          var t = String((b && b.text) || '').trim();
+          if (!t) db.vipSettings.welcome = null;
+          else if (t.length > 500) throw err('VALIDATION_ERROR', 422, 'متن خوش‌آمدگویی حداکثر ۵۰۰ کاراکتر است.');
+          else db.vipSettings.welcome = t;
+        }
+        return vipSettingsView();
+      }],
+      ['POST', /^\/vip\/settings\/mask$/, function (b) {
+        if (!vipActive()) throw err('VIP_REQUIRED', 403, 'این تنظیم فقط برای اعضای VIP فعال است.');
+        if (b && b.clear) { db.vipSettings.mask = null; return vipSettingsView(); }
+        var e = String((b && b.emoji) || '').trim(), tx = String((b && b.text) || '').trim();
+        if (!e) throw err('VALIDATION_ERROR', 422, 'ایموجی نقاب را انتخاب کن یا خودت تایپ کن.');
+        db.vipSettings.mask = { emoji: e, text: tx };
+        return vipSettingsView();
       }],
       ['GET', /^\/leaderboard/, function (b, m, q) { return lb(q.get('period') === 'week' ? 'week' : 'all'); }],
       ['POST', /^\/leaderboard\/visibility$/, function (b) {
@@ -1434,7 +1468,26 @@
     }
   });
 
-  /* ===================== Page: VIP ===================== */
+  /* ===================== v4.9: Page: VIP (بازطراحی — صفحهٔ اختصاصی اعضای فعال) =====================
+     اعضای VIP فعال: صفحهٔ مستقل با کارت طلایی، دکمه‌های «قابلیت‌های VIP» و «تنظیمات VIP»،
+     دسترسی سریع ابزارهای ویژه و بخش فشردهٔ تمدید — صفحهٔ تمیزتر؛ لیست کامل امکانات فقط با دکمه.
+     کاربران عادی: همان قیف فروش قبلی + دکمه‌های قابلیت‌ها/تنظیمات (قفل‌شده → آپ‌سل). */
+  function vipFeaturesSheet(features, active) {
+    openSheet({
+      title: 'قابلیت‌های VIP',
+      body: h('div', { class: 'stack', style: 'padding-top:6px' },
+        h('div', { class: 'center', style: 'margin-bottom:4px' },
+          h('div', { class: 'g-icon', style: 'margin:0 auto 10px;background:linear-gradient(135deg,#f7c948,#e09b12);color:#fff' }, icon('crown')),
+          h('h3', { style: 'margin:0 0 4px;font-weight:800' }, active ? 'همهٔ ابزارهای کارآگاه ویژه' : 'با کارت طلایی چه می‌گیری؟'),
+          h('p', { class: 'muted small', style: 'margin:0' }, active ? 'همین حالا روی حساب تو فعال است ✨' : 'یک اشتراک، همهٔ این امکانات')),
+        h('ul', { class: 'features' }, (features || []).map(function (f) { return h('li', null, icon('check'), f); }))),
+      actions: [
+        active ? { text: 'عالیه!', icon: 'check', onClick: function (close) { close(); } }
+               : { text: 'فعال‌سازی VIP', kind: 'gold', icon: 'crown', onClick: function (close) { close(); } }
+      ]
+    });
+  }
+
   Router.def('vip', {
     render: function (ctx) {
       ctx.header({ title: 'اشتراک VIP', subtitle: 'پرداخت امن با درگاه بله' });
@@ -1443,20 +1496,56 @@
       function draw(d) {
         if (!selected) { var pop = d.plans.filter(function (p) { return p.badge; })[0]; selected = (pop || d.plans[0]).id; }
         var st = d.status, w = h('div', null);
-        w.appendChild(h('div', { class: 'vip-card' + (st.active ? '' : ' off') }, icon('crown', 'crown'),
-          h('div', { class: 'row between' }, h('h3', null, st.active ? 'VIP فعال است ✨' : 'هنوز VIP نیستی'), st.active ? h('span', { class: 'chip gold' }, st.plan_title || 'VIP') : null),
-          h('div', { class: 'small', style: 'opacity:.85;margin-top:2px' }, st.active ? 'از همهٔ امکانات ویژه استفاده کن.' : 'با VIP هویت کامل فضول‌ها را ببین.'),
-          st.active ? h('div', { class: 'exp' }, h('div', null, h('b', null, fa(st.days_left) + ' روز'), h('span', null, 'باقی‌مانده')), h('div', null, h('b', null, jshort(st.expires_at)), h('span', null, 'تاریخ انقضا'))) : null));
-        w.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-title' }, icon('sparkles'), 'امکانات VIP'), h('ul', { class: 'features' }, d.features.map(function (f) { return h('li', null, icon('check'), f); }))));
-        /* v4.4: مقایسهٔ قیمت هوشمند — همهٔ مبالغ از تنظیمات زندهٔ ادمین */
-        if (d.comparison && !st.active) {
-          var cp = d.comparison;
-          w.appendChild(h('div', { class: 'gold-teaser', onclick: function () { Platform.haptic('light'); } }, icon('coins') || icon('crown'),
-            h('div', { class: 'txt' },
-              h('b', null, '💡 مقایسهٔ هوشمند'),
-              h('span', null, fa(cp.singles) + ' هویتِ تکی = ' + toman(cp.singles_total)),
-              h('span', null, 'VIP کامل ماه فقط ' + toman(cp.month_price) + ' — ' + fa(cp.save_pct) + '٪ ارزان‌تر!'))));
+
+        if (st.active) {
+          /* ---------- صفحهٔ اختصاصی اعضای VIP ---------- */
+          w.appendChild(h('div', { class: 'vip-hero' }, icon('crown', 'crown'),
+            h('div', { class: 'row between' }, h('h3', null, 'کارآگاه ویژه'), h('span', { class: 'chip gold' }, st.plan_title || 'VIP')),
+            h('div', { class: 'small', style: 'opacity:.9;margin-top:2px' }, 'کارت طلایی تو فعال است — از همهٔ امکانات ویژه استفاده کن.'),
+            h('div', { class: 'exp' },
+              h('div', null, h('b', null, fa(st.days_left) + ' روز'), h('span', null, 'باقی‌مانده')),
+              h('div', null, h('b', null, jshort(st.expires_at)), h('span', null, 'تاریخ انقضا')))));
+          /* دو دکمهٔ اصلی — هدف: تمیزتر شدن صفحه (لیست امکانات فقط با دکمه باز می‌شود) */
+          w.appendChild(h('div', { class: 'vip-actions' },
+            h('button', { class: 'vip-act', onclick: function () { Platform.haptic('light'); vipFeaturesSheet(d.features, true); } },
+              h('span', { class: 'vip-act-ic' }, icon('sparkles')),
+              h('span', { class: 'grow' }, h('b', null, 'قابلیت‌های VIP'), h('span', null, 'مشاهدهٔ لیست کامل امکانات')),
+              icon('chevL', 'chev')),
+            h('button', { class: 'vip-act', onclick: function () { Platform.haptic('light'); Router.go('vip-settings'); } },
+              h('span', { class: 'vip-act-ic' }, icon('edit')),
+              h('span', { class: 'grow' }, h('b', null, 'تنظیمات VIP'), h('span', null, 'خوش‌آمدگویی، نقاب و…')),
+              icon('chevL', 'chev'))));
+          /* دسترسی سریع ابزارهای ویژهٔ VIP */
+          w.appendChild(SectionTitle('دسترسی سریع'));
+          w.appendChild(h('div', { class: 'list' },
+            ListItem({ icon: 'gift', tone: 'gold', title: 'چرخ شانس روزانه', sub: 'روزی یک چرخش رایگان ویژهٔ VIP', onClick: function () { Router.go('wheel'); } }),
+            ListItem({ icon: 'message', tone: 'info', title: 'پیام ناشناس به فضول‌ها', sub: 'بدون محدودیت و با نقاب کارآگاهی', onClick: function () { Router.tab('chat'); } }),
+            ListItem({ icon: 'target', title: 'تله‌های اختصاصی', sub: 'تله‌های چندگانه با نام دلخواه', onClick: function () { Router.tab('snoop'); } })));
+        } else {
+          /* ---------- قیف فروش کاربران عادی ---------- */
+          w.appendChild(h('div', { class: 'vip-card off' }, icon('crown', 'crown'),
+            h('div', { class: 'row between' }, h('h3', null, 'هنوز VIP نیستی')),
+            h('div', { class: 'small', style: 'opacity:.85;margin-top:2px' }, 'با VIP هویت کامل فضول‌ها را ببین.')));
+          w.appendChild(h('div', { class: 'vip-actions' },
+            h('button', { class: 'vip-act', onclick: function () { Platform.haptic('light'); vipFeaturesSheet(d.features, false); } },
+              h('span', { class: 'vip-act-ic' }, icon('sparkles')),
+              h('span', { class: 'grow' }, h('b', null, 'قابلیت‌های VIP'), h('span', null, 'مشاهدهٔ لیست کامل امکانات')),
+              icon('chevL', 'chev')),
+            h('button', { class: 'vip-act locked', onclick: function () { Platform.haptic('light'); vipSettingsUpsell(); } },
+              h('span', { class: 'vip-act-ic' }, icon('lock')),
+              h('span', { class: 'grow' }, h('b', null, 'تنظیمات VIP'), h('span', null, 'متن خوش‌آمدگویی، نقاب و…')),
+              icon('chevL', 'chev'))));
+          /* v4.4: مقایسهٔ قیمت هوشمند — همهٔ مبالغ از تنظیمات زندهٔ ادمین */
+          if (d.comparison) {
+            var cp = d.comparison;
+            w.appendChild(h('div', { class: 'gold-teaser', onclick: function () { Platform.haptic('light'); } }, icon('coins') || icon('crown'),
+              h('div', { class: 'txt' },
+                h('b', null, '💡 مقایسهٔ هوشمند'),
+                h('span', null, fa(cp.singles) + ' هویتِ تکی = ' + toman(cp.singles_total)),
+                h('span', null, 'VIP کامل ماه فقط ' + toman(cp.month_price) + ' — ' + fa(cp.save_pct) + '٪ ارزان‌تر!'))));
+          }
         }
+
         w.appendChild(SectionTitle(st.active ? 'تمدید اشتراک' : 'انتخاب پلن'));
         var plans = h('div', { class: 'plans' });
         d.plans.forEach(function (p) {
@@ -1497,6 +1586,206 @@
             onClose: function () { if (ctx.alive) ctx.reload(); }
           });
         }, function (e) { MainAction.loading(false); toast(errMsg(e), 'error'); });
+      }
+    }
+  });
+
+  /* آپ‌سل تنظیمات VIP برای کاربر عادی — معرفی «کارگاه کارآگاه ویژه» */
+  function vipSettingsUpsell() {
+    openSheet({
+      title: 'تنظیمات ویژهٔ VIP',
+      body: h('div', { class: 'stack' },
+        h('div', { class: 'center', style: 'margin-bottom:4px' },
+          h('div', { class: 'g-icon', style: 'margin:0 auto 10px;background:linear-gradient(135deg,#f7c948,#e09b12);color:#fff' }, icon('lock')),
+          h('h3', { style: 'margin:0 0 6px;font-weight:800' }, 'کارگاه کارآگاه ویژه'),
+          h('p', { class: 'muted small', style: 'margin:0' }, 'این تنظیم‌ها فقط برای اعضای کارت طلایی است:')),
+        h('div', { class: 'list' },
+          ListItem({ icon: 'edit', title: 'متن خوش‌آمدگویی', sub: 'پیامی که فضول‌ها موقع کلیک روی لینکت می‌بینند' }),
+          ListItem({ icon: 'image', title: 'عکس خوش‌آمدگویی', sub: 'کنار متن، یک عکس هم بفرست' }),
+          ListItem({ icon: 'user', title: 'نقاب کارآگاهی', sub: 'هویتت در پیام‌های ناشناس مخفی می‌ماند' }))),
+      actions: [{ text: 'فعال‌سازی VIP', kind: 'gold', icon: 'crown', onClick: function (close) { close(); } }]
+    });
+  }
+
+  /* ===================== v4.9: Page: تنظیمات VIP (کارگاه کارآگاه ویژه) =====================
+     تنظیم متن خوش‌آمدگویی و نقاب کارآگاهی مستقیماً از مینی‌اپ (همان دادهٔ ربات —
+     users.welcome_text و user_mask) + وضعیت عکس خوش‌آمدگویی و هدایت به چت ربات برای آپلود.
+     params.open: 'welcome' | 'mask' | 'photo' → بعد از لود، شیت مربوط خودکار باز می‌شود. */
+  Router.def('vip-settings', {
+    render: function (ctx) {
+      ctx.header({ title: 'تنظیمات VIP', subtitle: 'کارگاه کارآگاه ویژه' });
+      var autoOpened = false;
+      useData(ctx, 'vip-settings', function () { return api('/vip/settings'); }, draw, Skel.cards);
+
+      function draw(d) {
+        if (!d.active) {
+          Cache.del('vip-settings');
+          ctx.body.replaceChildren(h('div', { class: 'card center', style: 'padding:22px 16px' },
+            h('div', { class: 'g-icon', style: 'margin:0 auto 10px;background:linear-gradient(135deg,#f7c948,#e09b12);color:#fff' }, icon('lock')),
+            h('h3', { style: 'margin:0 0 6px;font-weight:800' }, 'این بخش ویژهٔ اعضای VIP است'),
+            h('p', { class: 'muted small', style: 'margin:0 0 14px' }, 'با کارت طلایی، متن خوش‌آمدگویی، عکس و نقاب کارآگاهی‌ات را تنظیم کن.'),
+            h('button', { class: 'btn btn-gold', onclick: function () { Router.tab('vip'); } }, icon('crown'), 'فعال‌سازی VIP')));
+          MainAction.clear();
+          return;
+        }
+        var lim = d.limits || {};
+        var w = h('div', null);
+
+        /* ---------- متن خوش‌آمدگویی ---------- */
+        var hasText = !!(d.welcome && d.welcome.text);
+        w.appendChild(h('div', { class: 'card' },
+          h('div', { class: 'card-title' }, icon('edit'), 'متن خوش‌آمدگویی'),
+          h('div', { class: 'small muted', style: 'margin:4px 0 10px' }, 'وقتی فضولی روی لینکت کلیک کند، اول این پیام به او نشان داده می‌شود.'),
+          hasText ? h('div', { class: 'vs-curr' }, h('div', { class: 'vs-curr-bubble' }, d.welcome.text)) : h('div', { class: 'alert warn', style: 'margin:0' }, icon('info'), h('div', null, 'هنوز متنی ثبت نشده است.')),
+          h('div', { class: 'btn-row mt-12' },
+            h('button', { class: 'btn btn-primary btn-sm', onclick: function () { Platform.haptic('light'); welcomeSheet(d); } }, icon('edit'), hasText ? 'ویرایش متن' : 'تنظیم متن'),
+            hasText ? h('button', { class: 'btn btn-danger btn-sm', onclick: function () { clearWelcome(d); } }, icon('trash'), 'حذف') : null)));
+
+        /* ---------- عکس خوش‌آمدگویی ---------- */
+        var hasPhoto = !!(d.welcome && d.welcome.photo_set);
+        w.appendChild(h('div', { class: 'card mt-12' },
+          h('div', { class: 'card-title' }, icon('image'), 'عکس خوش‌آمدگویی'),
+          h('div', { class: 'small muted', style: 'margin:4px 0 10px' }, 'کنار متن خوش‌آمدگویی، می‌توانی یک عکس هم برای فضول بفرستی.'),
+          h('div', { class: 'row between' },
+            h('span', { class: 'chip ' + (hasPhoto ? 'accent' : '') }, hasPhoto ? '✅ عکس ثبت شده' : 'ثبت نشده'),
+            h('button', { class: 'btn btn-secondary btn-sm', onclick: function () { Platform.haptic('light'); photoSheet(); } }, icon('external'), 'تنظیم در چت ربات'))));
+
+        /* ---------- نقاب کارآگاهی ---------- */
+        var hasMask = !!(d.mask && (d.mask.emoji || d.mask.text));
+        w.appendChild(h('div', { class: 'card mt-12' },
+          h('div', { class: 'card-title' }, icon('user'), 'نقاب کارآگاهی'),
+          h('div', { class: 'small muted', style: 'margin:4px 0 10px' }, 'با نقاب، هویتت موقع پیام ناشناس مخفی می‌ماند — نقاب = یک ایموجی + یک لقب.'),
+          hasMask ? h('div', { class: 'vs-curr center', style: 'display:flex;align-items:center;justify-content:center;gap:10px' },
+            h('span', { class: 'vs-mask-emoji' }, (d.mask.emoji || '🎭')),
+            h('span', { class: 'bold' }, d.mask.text || '— بدون لقب —')) : h('div', { class: 'alert warn', style: 'margin:0' }, icon('info'), h('div', null, 'هنوز نقابی نساخته‌ای.')),
+          h('div', { class: 'btn-row mt-12' },
+            h('button', { class: 'btn btn-primary btn-sm', onclick: function () { Platform.haptic('light'); maskSheet(d); } }, icon('edit'), hasMask ? 'ویرایش نقاب' : 'ساخت نقاب'),
+            hasMask ? h('button', { class: 'btn btn-danger btn-sm', onclick: function () { clearMask(d); } }, icon('trash'), 'حذف') : null)));
+
+        w.appendChild(h('div', { class: 'alert mt-12' }, icon('info'),
+          h('div', null, 'این تنظیم‌ها همان «کارگاه کارآگاه ویژه» پنل شیشه‌ای ربات‌اند و بین مینی‌اپ و چت ربات هم‌یشه هم‌گام می‌مانند.')));
+        ctx.body.replaceChildren(w);
+        MainAction.clear();
+
+        /* باز کردن خودکار شیت درخواستی (مثلاً از دکمهٔ ماموریت «تنظیم متن خوش‌آمدگویی») */
+        if (!autoOpened && ctx.params.open) {
+          autoOpened = true;
+          if (ctx.params.open === 'welcome') welcomeSheet(d);
+          else if (ctx.params.open === 'mask') maskSheet(d);
+          else if (ctx.params.open === 'photo') photoSheet();
+        }
+
+        function reload() { Cache.del('vip-settings'); if (ctx.alive) ctx.reload(); }
+
+        function welcomeSheet(cur) {
+          var limMax = lim.welcome_max || 500;
+          var ta = h('textarea', { class: 'textarea', rows: 4, maxLength: limMax, placeholder: 'مثلاً: سلام رفیق! به تلهٔ فضول‌یاب خوش اومدی 👀' });
+          ta.value = (cur.welcome && cur.welcome.text) || '';
+          var cnt = h('div', { class: 'small muted', style: 'text-align:left;margin-top:4px' });
+          function syncCnt() { cnt.textContent = fa(ta.value.length) + ' از ' + fa(limMax); }
+          ta.addEventListener('input', syncCnt); syncCnt();
+          var sh = openSheet({
+            title: 'متن خوش‌آمدگویی',
+            body: h('div', { class: 'stack' },
+              h('p', { class: 'small muted', style: 'margin:0' }, 'این متن همراه (یا بدون) عکس خوش‌آمدگویی، برای هر فضولی که روی لینکت کلیک کند ارسال می‌شود.'),
+              ta, cnt,
+              h('div', { class: 'alert warn' }, icon('alert'), h('div', null, 'لینک و آیدی خارجی مجاز نیست — مثل چت ربات.'))),
+            actions: [
+              { text: 'ذخیره متن', icon: 'check', onClick: function (close, btn) {
+                var t = ta.value.trim();
+                if (!t) { toast('متن خوش‌آمدگویی را بنویس یا از دکمهٔ حذف استفاده کن', 'error'); ta.focus(); return; }
+                withLoading(btn, api('/vip/settings/welcome', { method: 'POST', body: { text: t } })).then(function () {
+                  close(); toast('متن خوش‌آمدگویی ذخیره شد ✅', 'success'); reload();
+                }, function (e) { toast(errMsg(e), 'error'); });
+              } },
+              (cur.welcome && cur.welcome.text) ? { text: 'حذف', kind: 'ghost', onClick: function (close, btn) {
+                withLoading(btn, api('/vip/settings/welcome', { method: 'POST', body: { clear: true } })).then(function () {
+                  close(); toast('متن خوش‌آمدگویی حذف شد', 'success'); reload();
+                }, function (e) { toast(errMsg(e), 'error'); });
+              } } : { text: 'انصراف', kind: 'ghost' }
+            ]
+          });
+          return sh;
+        }
+
+        function photoSheet() {
+          openSheet({
+            title: 'عکس خوش‌آمدگویی',
+            body: h('div', { class: 'stack' },
+              h('p', { class: 'small muted', style: 'margin:0' }, 'آپلود عکس فقط در چت ربات ممکن است. با دکمهٔ زیر مستقیم به «کارگاه کارآگاه ویژه» می‌روی:'),
+              h('div', { class: 'list' },
+                ListItem({ icon: 'bot', title: '۱. باز شدن چت ربات', sub: 'منوی کارگاه کارآگاه ویژه' }),
+                ListItem({ icon: 'image', title: '۲. «عکس خوش‌آمدگویی» را بزن', sub: 'و عکس دلخواهت را ارسال کن' }),
+                ListItem({ icon: 'crown', tone: 'gold', title: '۳. عکس کنار متن نمایش داده می‌شود', sub: 'برای همهٔ فضول‌های بعدی' }))),
+            actions: [{ text: 'باز کردن چت ربات', icon: 'external', onClick: function (close) { close(); Platform.openBot('vipset'); } }]
+          });
+        }
+
+        function maskSheet(cur) {
+          var emojis = cur.mask_emojis || [];
+          var chosen = (cur.mask && cur.mask.emoji) || null;
+          var txt = h('input', { class: 'input', maxLength: lim.mask_text_max || 32, placeholder: 'لقب نقاب — مثلاً: کارآگاه شب (اختیاری)' });
+          txt.value = (cur.mask && cur.mask.text) || '';
+          var custom = h('input', { class: 'input ltr', maxLength: lim.mask_emoji_max || 8, placeholder: 'یا ایموجی دلخواه…', style: 'text-align:center;font-size:20px' });
+          var preview = h('div', { class: 'vs-curr center', style: 'display:flex;align-items:center;justify-content:center;gap:10px;min-height:64px' });
+          function paint() {
+            var e = chosen || custom.value.trim() || '🎭';
+            var t = txt.value.trim();
+            preview.replaceChildren(h('span', { class: 'vs-mask-emoji' }, e), h('span', { class: 'bold' }, t || '— بدون لقب —'));
+            [].forEach.call(grid.children, function (b) { b.classList.toggle('on', b.textContent === (chosen || '')); });
+          }
+          var grid = h('div', { class: 'emoji-grid' });
+          emojis.forEach(function (em) {
+            grid.appendChild(h('button', { type: 'button', class: 'emoji-cell' + (em === chosen ? ' on' : ''), onclick: function () {
+              Platform.haptic('select'); chosen = em; custom.value = ''; paint();
+            } }, em));
+          });
+          custom.addEventListener('input', function () { if (custom.value.trim()) { chosen = null; } paint(); });
+          txt.addEventListener('input', paint);
+          paint();
+          openSheet({
+            title: 'نقاب کارآگاهی',
+            body: h('div', { class: 'stack' },
+              h('p', { class: 'small muted', style: 'margin:0' }, 'نقاب قبل از پیام‌های ناشناست نمایش داده می‌شود: «🎭 لقب نجوا کرد…»'),
+              grid,
+              h('div', { class: 'field' }, custom, h('div', { class: 'hint' }, h('span', null, 'ایموجی دلخواه (اختیاری)'), h('span', null, ''))),
+              txt,
+              h('div', { class: 'small muted' }, 'پیش‌نمایش:'),
+              preview),
+            actions: [
+              { text: 'ذخیره نقاب', icon: 'check', onClick: function (close, btn) {
+                var e = chosen || custom.value.trim();
+                if (!e) { toast('یک ایموجی انتخاب کن یا تایپ کن', 'error'); return; }
+                withLoading(btn, api('/vip/settings/mask', { method: 'POST', body: { emoji: e, text: txt.value.trim() } })).then(function () {
+                  close(); toast('نقاب کارآگاهی ذخیره شد ✅', 'success'); reload();
+                }, function (e2) { toast(errMsg(e2), 'error'); });
+              } },
+              (cur.mask && (cur.mask.emoji || cur.mask.text)) ? { text: 'حذف نقاب', kind: 'ghost', onClick: function (close, btn) {
+                withLoading(btn, api('/vip/settings/mask', { method: 'POST', body: { clear: true } })).then(function () {
+                  close(); toast('نقاب حذف شد', 'success'); reload();
+                }, function (e2) { toast(errMsg(e2), 'error'); });
+              } } : { text: 'انصراف', kind: 'ghost' }
+            ]
+          });
+        }
+
+        function clearWelcome(cur) {
+          confirmDialog({ title: 'حذف متن خوش‌آمدگویی', text: 'فضول‌ها دیگر پیام خوش‌آمدگویی نمی‌گیرند. مطمئنی؟', danger: true, ok: 'حذف کن' }).then(function (yes) {
+            if (!yes) return;
+            api('/vip/settings/welcome', { method: 'POST', body: { clear: true } }).then(function () {
+              toast('متن خوش‌آمدگویی حذف شد', 'success'); reload();
+            }, function (e) { toast(errMsg(e), 'error'); });
+          });
+        }
+
+        function clearMask() {
+          confirmDialog({ title: 'حذف نقاب کارآگاهی', text: 'هویتت در پیام‌های ناشناس دوباره با نشان پیش‌فرض نمایش داده می‌شود. مطمئنی؟', danger: true, ok: 'حذف کن' }).then(function (yes) {
+            if (!yes) return;
+            api('/vip/settings/mask', { method: 'POST', body: { clear: true } }).then(function () {
+              toast('نقاب حذف شد', 'success'); reload();
+            }, function (e) { toast(errMsg(e), 'error'); });
+          });
+        }
       }
     }
   });
@@ -1968,7 +2257,12 @@
       if (/لقب|بی‌صدا|بی صدا|تله/.test(s)) return { text: 'رفتن به فضول‌یاب', icon: 'eye', run: function () { Router.tab('snoop'); } };
       if (/ناشناس|بلاک/.test(s)) return { text: 'رفتن به چت ناشناس', icon: 'message', run: function () { Router.tab('chat'); } };
       if (/کد هدیه|جایزهٔ? ?روزانه|گردونه|چرخ/.test(s)) return { text: 'رفتن به پاداش‌ها', icon: 'gift', run: function () { Router.go('wheel'); } };
-      if (/VIP|خوش‌آمد|نقاب/.test(s)) return { text: 'رفتن به بخش VIP', icon: 'crown', run: function () { Router.tab('vip'); } };
+      /* v4.9: ماموریت‌های خوش‌آمدگویی/نقاب مستقیم به شیت تنظیم می‌روند (رفع «دکمهٔ رفتن به VIP
+         ولی بدون دکمهٔ تنظیم متن») — تنظیم عکس به چت ربات هدایت می‌شود. */
+      if (/عکس خوش‌آمد/.test(s)) return { text: 'تنظیم عکس خوش‌آمدگویی', icon: 'image', run: function () { Router.go('vip-settings', { open: 'photo' }); } };
+      if (/خوش‌آمد/.test(s)) return { text: 'تنظیم متن خوش‌آمدگویی', icon: 'edit', run: function () { Router.go('vip-settings', { open: 'welcome' }); } };
+      if (/نقاب/.test(s)) return { text: 'تنظیم نقاب کارآگاهی', icon: 'user', run: function () { Router.go('vip-settings', { open: 'mask' }); } };
+      if (/VIP/.test(s)) return { text: 'رفتن به بخش VIP', icon: 'crown', run: function () { Router.tab('vip'); } };
       if (/نام نمایشی|پروفایل/.test(s)) return { text: 'رفتن به پروفایل', icon: 'user', run: function () { Router.tab('profile'); } };
       if (/دعوت|کاربر جدید|کلیک|فضول|تله/.test(s) && link) {
         return { text: 'اشتراک‌گذاری لینک', icon: 'share', run: function () { shareLink(link); },

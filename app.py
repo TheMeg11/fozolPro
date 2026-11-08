@@ -299,6 +299,30 @@ def create_app(bot: Any = None) -> FastAPI:
     def vip_purchase(body: PurchaseIn, user: dict = Depends(member_user)):
         return ok(vip.create_invoice(user["user_id"], body.plan_id))
 
+    # ---------- v4.9: تنظیمات ویژهٔ VIP (متن خوش‌آمدگویی + نقاب) ----------
+    @app.get("/api/vip/settings")
+    def vip_settings_view(user: dict = Depends(member_user)):
+        return ok(vip.settings_view(user["user_id"]))
+
+    @app.post("/api/vip/settings/welcome")
+    def vip_settings_welcome(body: dict, user: dict = Depends(member_user)):
+        text = body.get("text")
+        if text is not None and not isinstance(text, str):
+            raise AppError("VALIDATION_ERROR", "متن خوش‌آمدگویی نامعتبر است.", 422)
+        return ok(vip.set_welcome_text(user["user_id"], text))
+
+    @app.post("/api/vip/settings/mask")
+    def vip_settings_mask(body: dict, user: dict = Depends(member_user)):
+        if body.get("clear"):
+            return ok(vip.clear_mask(user["user_id"]))
+        emoji = body.get("emoji")
+        mask_text = body.get("text")
+        if not isinstance(emoji, str):
+            raise AppError("VALIDATION_ERROR", "ایموجی نقاب را انتخاب کن.", 422)
+        if mask_text is not None and not isinstance(mask_text, str):
+            raise AppError("VALIDATION_ERROR", "لقب نقاب نامعتبر است.", 422)
+        return ok(vip.set_mask(user["user_id"], emoji, mask_text or ""))
+
     # ---------- XP / لیدربورد / گردونه ----------
     @app.get("/api/leaderboard")
     def leaderboard(period: Literal["week", "all"] = "week", user: dict = Depends(member_user)):

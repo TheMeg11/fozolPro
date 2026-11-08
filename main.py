@@ -3970,6 +3970,23 @@ def _start_cmd_impl(message):
                 logger.error(f"Miniapp reveal invoice error: {e}")
                 bot.reply_to(message, "❌ خطا در ایجاد فاکتور. بعداً تلاش کن.", reply_markup=main_menu(user_id))
             return
+        # v4.9: دیپ‌لینک مینی‌اپ → کارگاه کارآگاه ویژه (تنظیم عکس خوش‌آمدگویی و…)
+        # مینی‌اپ متن/نقاب را خودش ذخیره می‌کند؛ عکس نیازمند آپلود در چت ربات است.
+        if param == "vipset":
+            clear_user_state(chat_id)
+            m = types.InlineKeyboardMarkup(row_width=1)
+            m.add(types.InlineKeyboardButton("📝 متن خوش‌آمدگویی", callback_data="set_welcome"))
+            m.add(types.InlineKeyboardButton("🖼️ عکس خوش‌آمدگویی", callback_data="set_welcome_photo"))
+            m.add(types.InlineKeyboardButton("🎭 نقاب کارآگاهی", callback_data="set_mask"))
+            m.add(types.InlineKeyboardButton("👑 بازگشت به کارت طلایی", callback_data="vip_info"))
+            m.add(types.InlineKeyboardButton("🏠 خانه", callback_data="main_menu"))
+            bot.reply_to(message,
+                "✨ ━━━━━━━━━━━━━━ ✨\n"
+                "🛠 *کارگاه کارآگاه ویژه*\n"
+                "✨ ━━━━━━━━━━━━━━ ✨\n\n"
+                "ابزارهای اختصاصی کارت طلایی را اینجا تنظیم کن:",
+                parse_mode="Markdown", reply_markup=m)
+            return
         # v3.6: اول چک کن پارامتر کد تلهٔ چندگانه است
         trap_code = None
         trap_row = db.get_trap_by_code(param)
