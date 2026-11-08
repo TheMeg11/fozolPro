@@ -370,6 +370,22 @@ _bot_db_mod.broken_channels = broken_channels
 # FORCE_JOIN_ENABLED=0 یا false → عضویت اجباری کاملاً غیرفعال
 FORCE_JOIN_ENABLED = os.environ.get("FORCE_JOIN_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
 
+def _api_ch_id(ch_id):
+    """v4.7 (باگ اد اجباری): نرمال‌سازی شناسهٔ کانال برای API بله.
+
+    رکوردهای قدیمی پنل مینی‌اپ شناسهٔ متنی بدون @ (مثل «fzxinfo») دارند؛
+    getChatMember با آن خطای 404 «no such group» می‌دهد. شناسهٔ عددی و
+    @username بدون تغییر برمی‌گردند؛ متنی بدون @ → «@fzxinfo»."""
+    ch_id = (ch_id or "").strip()
+    if not ch_id:
+        return ch_id
+    if ch_id.startswith("@") or (ch_id.startswith("-") and ch_id[1:].isdigit()):
+        return ch_id
+    if ch_id.isdigit():
+        return ch_id
+    return "@" + ch_id
+
+
 def load_channels_from_db():
     """v4.7 (باگ «اد اجباری کار نمی‌کند»): کانال‌ها دیگر به‌خاطر خطای بررسی حذف نمی‌شوند.
 
@@ -391,7 +407,7 @@ def load_channels_from_db():
         broken_channels.discard(ch_id)
         # تست سریع دسترسی — کانال حتی در صورت خطا هم در چک اجباری می‌ماند (v4.7)
         try:
-            bot.get_chat_member(ch_id, ADMIN_ID)
+            bot.get_chat_member(_api_ch_id(ch_id), ADMIN_ID)
         except Exception as e:
             broken_channels.add(ch_id)
             logger.error(f"⚠️ Cannot verify admin in channel {ch_id}: {e}")
@@ -2324,7 +2340,7 @@ def is_subscribed(user_id):
     # چک واقعی — روی کپی پیمایش می‌کنیم چون در صورت تکمیل هدف، کانال از لیست حذف می‌شود
     for ch_id in list(CHANNELS):
         try:
-            member = bot.get_chat_member(ch_id, user_id)
+            member = bot.get_chat_member(_api_ch_id(ch_id), user_id)
             if member.status not in ['member', 'administrator', 'creator']:
                 # کش کردن نتیجه (غیرعضو)
                 with _subscription_cache_lock:
@@ -2393,7 +2409,7 @@ def build_channel_keyboard(original_callback, user_id):
     for ch_id in list(CHANNELS):  # v3.21: کپی — ممکن است کانالی حین چک حذف شود
         is_member = False
         try:
-            member = bot.get_chat_member(ch_id, user_id)
+            member = bot.get_chat_member(_api_ch_id(ch_id), user_id)
             if member.status in ['member', 'administrator', 'creator']:
                 # v3.21: اگر کانال با همین عضویت به هدف جذبش رسید، خودکار حذف می‌شود
                 try:
@@ -2414,10 +2430,15 @@ def build_channel_keyboard(original_callback, user_id):
         ch_name = info.get("name", ch_id)
         ch_link = info.get("link")
         if not ch_link:
-            if ch_id.startswith("@"):
-                ch_link = f"https://ble.ir/{ch_id[1:]}"
-            else:
+            # v4.7 (باگ اد اجباری): شناسهٔ متنی (با یا بدون @) → لینک عمومی
+            # ble.ir/<username>؛ فقط شناسهٔ عددی به joinchat می‌رود.
+            _aid = _api_ch_id(ch_id)
+            if _aid.startswith("@"):
+                ch_link = f"https://ble.ir/{_aid[1:]}"
+            elif _aid.startswith("-") and _aid[1:].isdigit():
                 ch_link = f"https://ble.ir/joinchat/{ch_id}"
+            else:
+                ch_link = f"https://ble.ir/{ch_id}"
         markup.add(types.InlineKeyboardButton(f"📢 {ch_name}", url=ch_link))
 
     if any_unjoined:
