@@ -5379,6 +5379,28 @@ def _task_progress_value(user_id, task):
             with db._lock:
                 row = db.conn.execute("SELECT COALESCE(julianday('now') - julianday(created_at), 0) FROM users WHERE user_id=?", (user_id,)).fetchone()
                 return int(row[0] or 0) if row else 0
+        # ---- v4.8: گروه‌های ماموریت‌های رشد (هم‌گام با services/missions.py) ----
+        if grp == "invite_count":
+            with db._lock:
+                return db.conn.execute("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND is_new_user=1", (user_id,)).fetchone()[0]
+        if grp == "streak":
+            with db._lock:
+                row = db.conn.execute("SELECT COALESCE(streak_count,0) FROM users WHERE user_id=?", (user_id,)).fetchone()
+                return int(row[0] or 0) if row else 0
+        if grp == "daily_claims":
+            with db._lock:
+                row = db.conn.execute("SELECT COALESCE(total_claims,0) FROM daily_bonus WHERE user_id=?", (user_id,)).fetchone()
+                return int(row[0] or 0) if row else 0
+        if grp == "wheel_spins":
+            with db._lock:
+                return db.conn.execute("SELECT COUNT(*) FROM wheel_spins WHERE user_id=?", (user_id,)).fetchone()[0]
+        if grp == "trap_count":
+            with db._lock:
+                return db.conn.execute("SELECT COUNT(*) FROM traps WHERE owner_id=?", (user_id,)).fetchone()[0]
+        if grp == "xp_total":
+            with db._lock:
+                row = db.conn.execute("SELECT COALESCE(xp,0) FROM users WHERE user_id=?", (user_id,)).fetchone()
+                return int(row[0] or 0) if row else 0
     except Exception:
         return None
     return None
@@ -8965,6 +8987,16 @@ def _callback_handler_impl(call):
                     except Exception:
                         pass
                     result_text = texts.WHEEL_RESULT_VIP.format(days=to_persian_digits(prize["value"]))
+                # ── v4.8: ثبت چرخش در wheel_spins — همانند مینی‌اپ (services/wheel.py) تا
+                # ماموریت‌های گردونه (g14/g15/g26) از هر دو مسیر ربات و مینی‌اپ شمرده شوند ──
+                try:
+                    with db._lock:
+                        db.conn.execute(
+                            "INSERT INTO wheel_spins(user_id, prize_type, amount, created_at) VALUES(?,?,?,?)",
+                            (user_id, prize["type"], prize["value"],
+                             datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")))
+                except Exception as _ws_err:
+                    logger.error(f"wheel_spins log error {user_id}: {_ws_err}")
                 # ── v3.14: نمایش سینمایی — تایپ‌رایتر + مکث + برد + MP4/GIF،
                 # همه در نخ پس‌زمینه؛ هندلر فوراً آزاد می‌شود تا polling برای
                 # هزاران کاربر هم‌زمان بلاک نشود ──

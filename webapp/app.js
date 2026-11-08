@@ -413,9 +413,14 @@
     var MISSIONS_POOL = [
       { id: 'e02', name: '۱۰ کلیک', desc: 'مجموعاً ۱۰ کلیک روی لینک شما انجام شود.', xp: 50, category: 'easy', category_info: { emoji: '🟢', title: 'آسان' }, progress: { value: 7, threshold: 10, pct: 70 } },
       { id: 'e13', name: 'تنظیم لقب', desc: 'برای یکی از فضول‌هایتان یک لقب تنظیم کنید.', xp: 50, category: 'easy', category_info: { emoji: '🟢', title: 'آسان' }, progress: null },
+      { id: 'g01', name: 'اولین دعوت موفق', desc: 'یک کاربر جدید با لینک تو برای اولین‌بار وارد ربات شود.', xp: 60, category: 'easy', category_info: { emoji: '🟢', title: 'آسان' }, progress: { value: 0, threshold: 1, pct: 0 } },
+      { id: 'g08', name: 'زنجیرهٔ ۷ روزه', desc: 'یک هفتهٔ کامل، هر روز سر بزن.', xp: 150, category: 'medium', category_info: { emoji: '🟡', title: 'متوسط' }, progress: { value: 4, threshold: 7, pct: 57 } },
+      { id: 'g19', name: '۵۰۰ XP جمع کن', desc: 'مجموع XP حاصله از کلیک، فضول و ماموریت‌ها به ۵۰۰ برسد.', xp: 60, category: 'easy', category_info: { emoji: '🟢', title: 'آسان' }, progress: { value: 320, threshold: 500, pct: 64 } },
       { id: 'm07', name: '۵۰ فضول', desc: '۵۰ فضول یکتا در دام شما بیفتند.', xp: 250, category: 'medium', category_info: { emoji: '🟡', title: 'متوسط' }, progress: { value: 23, threshold: 50, pct: 46 } },
       { id: 'h02', name: '۵۰۰ کلیک', desc: 'مجموعاً ۵۰۰ کلیک روی لینک شما انجام شود.', xp: 600, category: 'hard', category_info: { emoji: '🔴', title: 'سخت' }, progress: { value: 187, threshold: 500, pct: 37 } },
-      { id: 'm12', name: '۳ پیام ناشناس', desc: '۳ پیام ناشناس به فضول‌ها بفرستید.', xp: 150, category: 'medium', category_info: { emoji: '🟡', title: 'متوسط' }, progress: { value: 1, threshold: 3, pct: 33 } }
+      { id: 'm12', name: '۳ پیام ناشناس', desc: '۳ پیام ناشناس به فضول‌ها بفرستید.', xp: 150, category: 'medium', category_info: { emoji: '🟡', title: 'متوسط' }, progress: { value: 1, threshold: 3, pct: 33 } },
+      { id: 'g16', name: 'اولین تلهٔ اختصاصی', desc: 'یک تلهٔ اختصاصی با نام دلخواه بساز (VIP).', xp: 80, category: 'easy', category_info: { emoji: '🟢', title: 'آسان' }, progress: { value: 0, threshold: 1, pct: 0 } },
+      { id: 'g11', name: '۷ جایزهٔ روزانه', desc: '۷ بار جایزهٔ روزانه بگیر.', xp: 120, category: 'medium', category_info: { emoji: '🟡', title: 'متوسط' }, progress: { value: 5, threshold: 7, pct: 71 } }
     ];
     db.missionsPage = 1;
 
@@ -632,7 +637,7 @@
         var start = (p - 1) * 3 % MISSIONS_POOL.length;
         var tasks = MISSIONS_POOL.slice(start, start + 3);
         if (tasks.length < 3) tasks = tasks.concat(MISSIONS_POOL.slice(0, 3 - tasks.length));
-        return { page: p, tasks: tasks, total_remaining: 176 - 34, progress: { done: 34, total: 176, pct: 19 } };
+        return { page: p, tasks: tasks, total_remaining: 204 - 34, progress: { done: 34, total: 204, pct: 17 } };
       }],
       ['GET', /^\/missions\/([a-z0-9]+)$/, function (b, m) {
         var t = MISSIONS_POOL.filter(function (x) { return x.id === m[1]; })[0];
@@ -1286,7 +1291,7 @@
       q('link', 'کپی لینک', '#00a67e', function () { hyperlinkSheet(me.snoop.link); }),
       q('gift', 'گردونه', '#ec4899', function () { Router.go('wheel'); }, me.wheel.can_spin ? 'آماده' : null),
       q('trophy', 'برترین‌ها', '#e09b12', function () { Router.go('leaderboard'); }),
-      q('target', 'ماموریت‌ها', '#e5484d', function () { Router.go('missions'); }))));
+      q('target', 'ماموریت‌ها', '#8b5cf6', function () { Router.go('missions'); }, Missions.badge()))));
     if (!me.vip.active) {
       wrap.appendChild(h('div', { class: 'promo mt-12', onclick: function () { Router.tab('vip'); } }, icon('crown', 'big'),
         h('div', { class: 'grow' }, h('div', { class: 'bold' }, 'هویت فضول‌ها رو کشف کن!'), h('div', { class: 'small', style: 'opacity:.85' }, 'با ', h('b', null, 'VIP'), ' اسم و یوزرنیم کامل فضول‌ها را ببین.')),
@@ -1920,81 +1925,262 @@
     }
   });
 
-  /* ===================== v4.7: Page: Missions (همان ماموریت‌های پنل شیشه‌ای) ===================== */
-  Router.def('missions', {
-    render: function (ctx) {
-      var page = 1;
-      ctx.header({ title: 'ماموریت‌ها', subtitle: 'ماموریت‌های ویژهٔ امروز', actions: [iconBtn('refresh', function () { ctx.reload(); }, 'به‌روزرسانی')] });
-      useData(ctx, 'missions:' + page, function () { return api('/missions?page=' + page); }, function (d) { draw(d); }, Skel.cards);
-      function draw(d) {
-        var w = h('div', null);
-        var pct = d.progress.pct || 0;
-        /* کارت پیشرفت کلی — همان نوار ماموریت‌های ربات */
-        w.appendChild(h('div', { class: 'card missions-hero' },
-          h('div', { class: 'row between', style: 'margin-bottom:8px' },
-            h('div', { class: 'card-title', style: 'margin:0' }, icon('target'), 'پیشرفت کارآگاهی'),
-            h('span', { class: 'chip accent' }, fa(pct) + '٪')),
-          h('div', { class: 'progress', style: 'height:12px' }, h('i', { style: { width: pct + '%' } })),
-          h('div', { class: 'row between small', style: 'margin-top:8px' },
-            h('span', { class: 'muted' }, fa(d.progress.done) + ' از ' + fa(d.progress.total) + ' ماموریت کامل شده'),
-            h('span', { class: 'muted' }, fa(d.total_remaining) + ' باقی‌مانده'))));
-        if (!d.tasks.length) {
-          w.appendChild(h('div', { class: 'card' }, Empty({ icon: 'trophy', title: 'همهٔ ماموریت‌ها کامل شد! 🏆', text: 'تو دیگه افسانهٔ فضول‌یابی — اسمت برای همیشه می‌درخشه!' })));
-          ctx.body.replaceChildren(w);
-          return;
-        }
-        w.appendChild(h('div', { class: 'small muted', style: 'margin:14px 4px 8px' }, '🔥 امروز ' + fa(d.tasks.length) + ' ماموریت ویژه داری — هر شب ساعت ۰۰:۰۰ ست جدید باز می‌شود'));
-        d.tasks.forEach(function (t, i) {
-          w.appendChild(missionCard(t, i));
-        });
-        w.appendChild(h('div', { class: 'small muted', style: 'margin:10px 4px 0' }, '⚡ پاداش هر ماموریت فقط یک‌بار می‌دهد؛ بقیه هم خودکار شمرده می‌شوند'));
-        /* دکمهٔ «ماموریت‌های دیگر» — همان ناوبری ربات */
-        if (d.total_remaining > 3) {
-          w.appendChild(h('button', { class: 'btn btn-secondary btn-block mt-12', onclick: function () {
-            Platform.haptic('light'); page = page + 1; Cache.del('missions:');
-            useData(ctx, 'missions:' + page, function () { return api('/missions?page=' + page); }, function (d2) { draw(d2); }, Skel.cards);
-          } }, icon('refresh'), 'ماموریت‌های دیگر'));
-        }
-        ctx.body.replaceChildren(w);
-      }
-      function missionCard(t, i) {
-        var ci = t.category_info || { emoji: '🎯', title: 'ماموریت' };
-        var prog = t.progress;
-        var card = h('button', { class: 'card mission-card cat-' + (t.category || 'easy'), onclick: function () { missionSheet(t); } },
-          h('div', { class: 'row', style: 'gap:12px' },
-            h('div', { class: 'mission-icon' }, ci.emoji),
-            h('div', { class: 'grow', style: 'min-width:0' },
-              h('div', { class: 'row between', style: 'gap:8px' },
-                h('div', { class: 'bold ellipsis' }, t.name),
-                h('span', { class: 'chip gold', style: 'flex-shrink:0' }, '+' + fa(t.xp) + ' XP')),
-              h('div', { class: 'small muted', style: 'margin-top:2px' }, ci.title),
-              prog ? h('div', { class: 'progress', style: 'margin-top:8px' }, h('i', { style: { width: Math.min(100, prog.pct) + '%' } })) : null,
-              prog ? h('div', { class: 'row between small', style: 'margin-top:6px' },
-                h('span', { class: 'muted' }, fa(prog.value) + ' از ' + fa(prog.threshold)),
-                h('span', { class: 'muted' }, fa(prog.pct) + '٪')) : null)),
-          icon('chevL', 'chev'));
-        return card;
-      }
-      function missionSheet(t) {
-        var ci = t.category_info || { emoji: '🎯', title: 'ماموریت' };
-        var prog = t.progress;
-        openSheet({
-          title: 'جزئیات ماموریت',
-          body: h('div', { class: 'stack' },
-            h('div', { class: 'center', style: 'margin-bottom:4px' },
-              h('div', { class: 'mission-icon', style: 'width:64px;height:64px;font-size:32px;margin:0 auto 8px' }, ci.emoji),
-              h('h3', { style: 'margin:0 0 4px;font-weight:800' }, t.name),
-              h('div', null, h('span', { class: 'chip accent' }, ci.title), ' ', h('span', { class: 'chip gold' }, '+' + fa(t.xp) + ' XP'))),
-            h('div', { class: 'card info-rows' },
-              infoRow('توضیح', t.desc || '—'),
-              prog ? infoRow('پیشرفت', fa(prog.value) + ' از ' + fa(prog.threshold) + ' (' + fa(prog.pct) + '٪)') : null),
-            prog ? h('div', { class: 'progress', style: 'height:12px' }, h('i', { style: { width: Math.min(100, prog.pct) + '%' } })) : null,
-            h('div', { class: 'alert mt-12', style: 'text-align:right' }, icon('bolt'), h('div', null, 'وقتی ماموریت کامل شود، ', h('b', null, '+' + fa(t.xp) + ' XP'), ' خودکار به حسابت اضافه می‌شود.'))),
-          actions: [{ text: 'باشه، چشم!', onClick: function (close) { close(); } }]
-        });
-      }
+  /* =====================================================================
+     ماموریت‌ها — نسخهٔ بازطراحی‌شده (الهام از Notcoin، دقیقاً با توکن‌های تم فضول‌یاب)
+     جایگزین کامل بلوک «v4.7: Page: Missions» در webapp/app.js
+     وابستگی‌ها: فقط توابع موجود خود app.js — h, icon, fa, api, useData, Router, State,
+     LS, Platform, toast, openSheet, Skel, Empty, iconBtn, withLoading, errMsg, refreshMe,
+     shareLink, hyperlinkSheet. هیچ API یا ساختار دادهٔ جدیدی لازم نیست:
+       GET /api/missions?page=N  → { page, tasks[], total_remaining, progress{done,total,pct} }
+       GET /api/missions/{id}    → همان task + done
+     اصل یکپارچگی پاداش: کلاینت هرگز «ادعای تکمیل» ارسال نمی‌کند؛ وضعیت و XP فقط از
+     پاسخ سرور (award_pending → xp_bonuses با کلید یکتای user_id+bonus_type) خوانده می‌شود.
+     ===================================================================== */
+  var Missions = (function () {
+    var CAT = {
+      easy: { title: 'آسان', hint: 'شروع سریع، پاداش کوچک' },
+      medium: { title: 'متوسط', hint: 'کمی پشتکار می‌خواهد' },
+      hard: { title: 'سخت', hint: 'مخصوص کارآگاه‌های حرفه‌ای' }
+    };
+    var CAT_ORDER = { easy: 0, medium: 1, hard: 2 };
+    function tone(t) { return CAT[t.category] ? t.category : 'easy'; }
+    function todayKey() {
+      try { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tehran' }).format(new Date()); }
+      catch (e) { var d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
     }
-  });
+    function textOf(t) { return (t.name || '') + ' ' + (t.desc || ''); }
+    /* آیکن متمایز هر ماموریت از روی متن آن — ترتیب قواعد مهم است (خاص → عام) */
+    var ICON_RULES = [
+      [/XP/, 'bolt'], [/تله/, 'target'], [/لقب/, 'edit'], [/بی‌صدا|بی صدا/, 'ban'], [/بلاک/, 'ban'], [/ناشناس/, 'message'],
+      [/کد هدیه/, 'gift'], [/زنجیره|استریک/, 'fire'], [/جایزهٔ? ?روزانه|ورود روزانه/, 'calendar'],
+      [/گردونه|چرخ/, 'sparkles'], [/خوش‌آمد|نقاب|پروفایل|نام نمایشی/, 'user'],
+      [/هدیهٔ? ?VIP/, 'gift'], [/VIP/, 'crown'], [/دعوت|کاربر جدید|معرفی/, 'users'],
+      [/کلیک/, 'link'], [/فضول/, 'eye'], [/روز/, 'clock']
+    ];
+    function iconFor(t) {
+      var s = textOf(t);
+      for (var i = 0; i < ICON_RULES.length; i++) if (ICON_RULES[i][0].test(s)) return ICON_RULES[i][1];
+      return 'target';
+    }
+    /* اقدام پیشنهادی هر ماموریت — فقط ناوبری به قابلیت‌های موجود؛ هیچ تأییدی سمت کلاینت انجام نمی‌شود */
+    function ctaFor(t) {
+      var s = textOf(t), link = State.me && State.me.snoop && State.me.snoop.link;
+      if (/لقب|بی‌صدا|بی صدا|تله/.test(s)) return { text: 'رفتن به فضول‌یاب', icon: 'eye', run: function () { Router.tab('snoop'); } };
+      if (/ناشناس|بلاک/.test(s)) return { text: 'رفتن به چت ناشناس', icon: 'message', run: function () { Router.tab('chat'); } };
+      if (/کد هدیه|جایزهٔ? ?روزانه|گردونه|چرخ/.test(s)) return { text: 'رفتن به پاداش‌ها', icon: 'gift', run: function () { Router.go('wheel'); } };
+      if (/VIP|خوش‌آمد|نقاب/.test(s)) return { text: 'رفتن به بخش VIP', icon: 'crown', run: function () { Router.tab('vip'); } };
+      if (/نام نمایشی|پروفایل/.test(s)) return { text: 'رفتن به پروفایل', icon: 'user', run: function () { Router.tab('profile'); } };
+      if (/دعوت|کاربر جدید|کلیک|فضول|تله/.test(s) && link) {
+        return { text: 'اشتراک‌گذاری لینک', icon: 'share', run: function () { shareLink(link); },
+          alt: { text: 'کپی هایپرلینک برای بیو', icon: 'copy', run: function () { hyperlinkSheet(link); } } };
+      }
+      return null;
+    }
+    function cmp(a, b) {
+      var ca = CAT_ORDER[a.category], cb = CAT_ORDER[b.category];
+      ca = ca === undefined ? 9 : ca; cb = cb === undefined ? 9 : cb;
+      if (ca !== cb) return ca - cb;
+      var ta = (a.progress && a.progress.threshold) || 0, tb = (b.progress && b.progress.threshold) || 0;
+      if (ta !== tb) return ta - tb;
+      if ((a.xp || 0) !== (b.xp || 0)) return (a.xp || 0) - (b.xp || 0);
+      return String(a.id).localeCompare(String(b.id));
+    }
+    function pct(p) { return Math.max(0, Math.min(100, Math.round(p && p.pct || 0))); }
+
+    /* ---------- اجزای نمایشی ---------- */
+    function xpPill(t, done) {
+      return h('span', { class: 'mz-xp' + (done ? ' done' : '') }, icon(done ? 'check' : 'bolt'), done ? 'واریز شد' : h('span', { class: 'ltr' }, '+' + fa(t.xp) + ' XP'));
+    }
+    function progressRow(p) {
+      if (!p) return null;
+      var v = pct(p);
+      return h('div', { class: 'mz-prog' },
+        h('div', { class: 'progress', role: 'progressbar', 'aria-valuenow': v, 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('i', { style: { width: v + '%' } })),
+        h('span', null, fa(p.value) + ' از ' + fa(p.threshold)));
+    }
+    function card(t, done, fresh, idx, onOpen) {
+      var c = tone(t);
+      return h('button', {
+        class: 'card mz-card tone-' + c + (done ? ' is-done' : '') + (fresh ? ' mz-in' : ''),
+        style: fresh ? { animationDelay: Math.min(idx || 0, 8) * 45 + 'ms' } : null,
+        'aria-label': t.name + (done ? '، انجام شده' : '، ' + fa(t.xp) + ' XP'),
+        onclick: function () { Platform.haptic('light'); onOpen(t); }
+      },
+        h('div', { class: 'mz-ic' }, icon(done ? 'check' : iconFor(t))),
+        h('div', { class: 'mz-body' },
+          h('div', { class: 'mz-top' }, h('div', { class: 'mz-title' }, t.name), xpPill(t, done)),
+          h('div', { class: 'mz-desc' }, done ? 'ماموریت کامل شد و پاداش به حسابت اضافه شد.' : (t.desc || CAT[c].hint)),
+          done ? null : progressRow(t.progress)),
+        done ? null : icon('chevL', 'chev'));
+    }
+    function stat(v, k) { return h('div', { class: 'mz-stat' }, h('b', null, v), h('span', null, k)); }
+    function hero(s) {
+      var p = s.progress, lvl = State.me && State.me.xp;
+      return h('div', { class: 'card mz-hero' },
+        h('div', { class: 'mz-head' },
+          h('div', { class: 'mz-orb' }, icon('target')),
+          h('div', { class: 'grow' },
+            h('h3', null, 'پیشرفت کارآگاهی'),
+            h('div', { class: 'mz-sub' }, fa(p.done) + ' از ' + fa(p.total) + ' ماموریت کامل شده')),
+          h('span', { class: 'chip accent' }, fa(p.pct) + '٪')),
+        h('div', { class: 'progress', role: 'progressbar', 'aria-valuenow': p.pct, 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('i', { style: { width: p.pct + '%' } })),
+        h('div', { class: 'mz-stats' },
+          stat(fa(p.done), 'انجام‌شده'),
+          stat(fa(s.total_remaining), 'باقی‌مانده'),
+          stat(lvl ? fa(lvl.level) : '—', 'سطح شما')));
+    }
+    function skeleton() {
+      var w = h('div', { class: 'stack' }, Skel.block(158, 18), Skel.line('40%', 12));
+      for (var i = 0; i < 3; i++) w.appendChild(Skel.block(96, 18));
+      return w;
+    }
+
+    /* ---------- صفحه ---------- */
+    Router.def('missions', {
+      render: function (ctx) {
+        LS.set('missions_seen', todayKey());
+        var tasks = {}, done = {}, seen = {}, summary = null, page = 1, misses = 0, exhausted = false;
+        ctx.header({
+          title: 'ماموریت‌ها', subtitle: 'انجام بده، XP بگیر، سطح بالا برو',
+          actions: [iconBtn('refresh', function () { Platform.haptic('light'); ctx.reload(); }, 'به‌روزرسانی')]
+        });
+        useData(ctx, 'missions:1', function () { return api('/missions?page=1'); }, function (d) { absorb(d, true); }, skeleton);
+
+        function ids() { return Object.keys(tasks); }
+        function activeCount() { return ids().filter(function (id) { return !done[id]; }).length; }
+        function normalize(d) {
+          var p = d.progress || {};
+          return { progress: { done: p.done || 0, total: p.total || 0, pct: Math.max(0, Math.min(100, p.pct || 0)) }, total_remaining: d.total_remaining || 0 };
+        }
+        function absorb(d, firstPage) {
+          var prevDone = summary ? summary.progress.done : null, before = ids(), fresh = 0;
+          if (firstPage) { page = 1; misses = 0; exhausted = false; }
+          (d.tasks || []).forEach(function (t) { if (!tasks[t.id]) fresh++; tasks[t.id] = t; });
+          summary = normalize(d);
+          if (!firstPage) misses = fresh ? 0 : misses + 1;
+          if (summary.total_remaining <= activeCount() || misses >= 2) exhausted = true;
+          draw();
+          /* تکمیل‌های تازه: شمارندهٔ سرور بالا رفته — کارت‌های غایب فقط پس از تأیید سرور «انجام‌شده» می‌شوند */
+          if (prevDone !== null && summary.progress.done > prevDone) {
+            Platform.haptic('success');
+            toast('🎉 ' + fa(summary.progress.done - prevDone) + ' ماموریت کامل شد و پاداشش واریز شد', 'success');
+            refreshMe().then(function () { if (ctx.alive) draw(); }, function () { /* noop */ });
+            var present = {}; (d.tasks || []).forEach(function (t) { present[t.id] = true; });
+            before.filter(function (id) { return !present[id] && !done[id]; }).forEach(verify);
+          }
+        }
+        function verify(id) {
+          api('/missions/' + encodeURIComponent(id)).then(function (t) {
+            if (!ctx.alive) return;
+            tasks[id] = t; if (t.done) done[id] = true; draw();
+          }, function () { /* بی‌صدا — در به‌روزرسانی بعدی دوباره بررسی می‌شود */ });
+        }
+        function markDone(t) {
+          if (done[t.id]) return;
+          done[t.id] = true; tasks[t.id] = t;
+          summary.progress.done += 1;
+          summary.total_remaining = Math.max(0, summary.total_remaining - 1);
+          summary.progress.pct = summary.progress.total ? Math.floor(summary.progress.done * 100 / summary.progress.total) : 0;
+          Platform.haptic('success');
+          toast('🎉 ماموریت «' + t.name + '» کامل شد! ' + fa(t.xp) + ' XP واریز شد', 'success');
+          refreshMe().then(function () { if (ctx.alive) draw(); }, function () { /* noop */ });
+          draw();
+        }
+        function moreButton() {
+          var b = h('button', { class: 'btn btn-secondary btn-block mz-more', onclick: function () {
+            Platform.haptic('light');
+            withLoading(b, api('/missions?page=' + (page + 1))).then(function (d) { if (!ctx.alive) return; page += 1; absorb(d, false); }, function (e) { toast(errMsg(e), 'error'); });
+          } }, icon('plus'), 'ماموریت‌های بیشتر');
+          return b;
+        }
+        function draw() {
+          var w = h('div', null);
+          w.appendChild(hero(summary));
+          var all = ids().map(function (id) { return tasks[id]; });
+          var active = all.filter(function (t) { return !done[t.id]; }).sort(cmp);
+          var finished = all.filter(function (t) { return done[t.id]; });
+          if (!active.length && !finished.length) {
+            w.appendChild(h('div', { class: 'card mt-12' }, Empty({ icon: 'trophy', title: 'همهٔ ماموریت‌ها کامل شد! 🏆', text: 'تو دیگه افسانهٔ فضول‌یابی — فردا سر بزن؛ شاید ماموریت تازه‌ای باز شده باشد.' })));
+            ctx.body.replaceChildren(w); return;
+          }
+          w.appendChild(h('div', { class: 'mz-note' }, icon('fire'),
+            h('span', null, 'امروز ', h('b', null, fa(active.length) + ' ماموریت'), ' فعال داری — هر شب ساعت ۰۰:۰۰ ست تازه‌ای باز می‌شود.')));
+          var k = 0;
+          ['easy', 'medium', 'hard'].forEach(function (c) {
+            var items = active.filter(function (t) { return tone(t) === c; });
+            if (!items.length) return;
+            w.appendChild(h('div', { class: 'mz-sec' },
+              h('span', null, h('i', { class: 'mz-dot ' + c }), CAT[c].title),
+              h('span', { class: 'chip' }, fa(items.length) + ' ماموریت')));
+            var ul = h('div', { class: 'mz-list' });
+            items.forEach(function (t) { ul.appendChild(card(t, false, !seen[t.id], k++, openDetail)); });
+            w.appendChild(ul);
+          });
+          if (finished.length) {
+            w.appendChild(h('div', { class: 'mz-sec' }, h('span', null, h('i', { class: 'mz-dot easy' }), 'تکمیل‌شده'), h('span', { class: 'chip accent' }, fa(finished.length))));
+            var dl = h('div', { class: 'mz-list' });
+            finished.forEach(function (t) { dl.appendChild(card(t, true, false, 0, openDetail)); });
+            w.appendChild(dl);
+          }
+          if (!exhausted) w.appendChild(moreButton());
+          else if (active.length) w.appendChild(h('div', { class: 'small muted center mt-12' }, 'همهٔ ماموریت‌های باقی‌مانده را می‌بینی'));
+          w.appendChild(h('div', { class: 'mz-note' }, icon('shield'),
+            h('span', null, 'تأیید انجام هر ماموریت سمت سرور و از روی فعالیت واقعی توست؛ پاداش هر ماموریت فقط یک‌بار واریز می‌شود.')));
+          ctx.body.replaceChildren(w);
+          all.forEach(function (t) { seen[t.id] = true; });
+        }
+        function openDetail(t) {
+          var isDone = !!done[t.id], cta = isDone ? null : ctaFor(t), c = tone(t), sh;
+          var progWrap = h('div', null), statusWrap = h('div', null);
+          var body = h('div', { class: 'stack' },
+            h('div', { class: 'center' },
+              h('div', { class: 'mz-sheet-ic tone-' + c + (isDone ? ' is-done' : '') }, icon(isDone ? 'check' : iconFor(t))),
+              h('h3', { style: 'margin:0 0 6px;font-weight:800' }, t.name),
+              h('div', { class: 'row', style: 'justify-content:center' }, h('span', { class: 'chip' }, h('i', { class: 'mz-dot ' + c }), CAT[c].title), xpPill(t, isDone))),
+            h('p', { class: 'mz-sheet-desc' }, t.desc || CAT[c].hint),
+            progWrap, statusWrap,
+            cta && cta.alt ? h('div', { class: 'center' }, h('button', { class: 'btn btn-ghost btn-sm', onclick: function () { sh.close(); cta.alt.run(); } }, icon(cta.alt.icon), cta.alt.text)) : null);
+          function paint(tt, ok) {
+            progWrap.replaceChildren(); statusWrap.replaceChildren();
+            if (!ok && tt.progress) {
+              var p = tt.progress, left = Math.max(0, (p.threshold || 0) - (p.value || 0));
+              progWrap.appendChild(h('div', { class: 'card mz-sheet-prog' },
+                h('div', { class: 'row between small', style: 'margin-bottom:8px;font-weight:700' }, h('span', null, 'پیشرفت'), h('span', null, fa(p.value) + ' از ' + fa(p.threshold) + ' (' + fa(pct(p)) + '٪)')),
+                h('div', { class: 'progress', style: 'height:10px' }, h('i', { style: { width: pct(p) + '%' } })),
+                h('div', { class: 'small muted', style: 'margin-top:8px' }, left > 0 ? 'فقط ' + fa(left) + ' تای دیگر مانده!' : 'در آستانهٔ تکمیل — وضعیت را بررسی کن')));
+            }
+            statusWrap.appendChild(ok
+              ? h('div', { class: 'alert mz-ok' }, icon('checks'), h('div', null, h('b', null, 'انجام شد! '), h('span', { class: 'ltr' }, '+' + fa(tt.xp) + ' XP'), ' به حسابت واریز شده است.'))
+              : h('div', { class: 'alert' }, icon('shield'), h('div', null, 'با کامل‌شدن این ماموریت، ', h('b', { class: 'ltr' }, '+' + fa(tt.xp) + ' XP'), ' خودکار و فقط یک‌بار به حسابت اضافه می‌شود.')));
+          }
+          paint(t, isDone);
+          var actions = [];
+          if (cta) actions.push({ text: cta.text, icon: cta.icon, onClick: function (close) { close(); cta.run(); } });
+          if (!isDone) actions.push({ text: 'بررسی وضعیت', icon: 'refresh', kind: cta ? 'secondary' : 'primary', onClick: function (close, btn) {
+            withLoading(btn, api('/missions/' + encodeURIComponent(t.id))).then(function (fresh) {
+              if (!ctx.alive) return;
+              if (fresh.done) {
+                paint(fresh, true); markDone(fresh);
+                var act = sh.el.querySelector('.sheet-actions');
+                if (act) act.replaceChildren(h('button', { class: 'btn btn-primary', onclick: close }, icon('check'), 'عالیه!'));
+              } else {
+                tasks[t.id] = fresh; paint(fresh, false); draw();
+                var p = fresh.progress;
+                toast(p ? 'هنوز کامل نشده — ' + fa(p.value) + ' از ' + fa(p.threshold) : 'هنوز انجام نشده؛ بعد از انجام دوباره بررسی کن', 'info');
+              }
+            }, function (e) { toast(errMsg(e), 'error'); });
+          } });
+          if (isDone) actions.push({ text: 'عالیه!', icon: 'check', onClick: function (close) { close(); } });
+          sh = openSheet({ title: 'جزئیات ماموریت', body: body, actions: actions });
+        }
+      }
+    });
+
+    return {
+      /* نشان «جدید» روی دکمهٔ دسترسی سریع تا اولین بازدید امروز (فقط حالت نمایشی محلی؛ ربطی به پاداش ندارد) */
+      badge: function () { return LS.get('missions_seen') === todayKey() ? null : 'جدید'; }
+    };
+  })();
 
   /* ===================== Page: Wheel ===================== */
   Router.def('wheel', {

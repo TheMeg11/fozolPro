@@ -157,6 +157,19 @@ def progress_value(user_id: int, task: dict) -> int | None:
             return int(db.scalar(
                 "SELECT COALESCE(julianday('now') - julianday(created_at), 0) FROM users WHERE user_id=?",
                 (user_id,), 0))
+        # ---- v4.8: گروه‌های ماموریت‌های رشد ----
+        if grp == "invite_count":
+            return int(db.scalar("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND is_new_user=1", (user_id,), 0))
+        if grp == "streak":
+            return int(db.scalar("SELECT COALESCE(streak_count,0) FROM users WHERE user_id=?", (user_id,), 0))
+        if grp == "daily_claims":
+            return int(db.scalar("SELECT COALESCE(total_claims,0) FROM daily_bonus WHERE user_id=?", (user_id,), 0))
+        if grp == "wheel_spins":
+            return int(db.scalar("SELECT COUNT(*) FROM wheel_spins WHERE user_id=?", (user_id,), 0))
+        if grp == "trap_count":
+            return int(db.scalar("SELECT COUNT(*) FROM traps WHERE owner_id=?", (user_id,), 0))
+        if grp == "xp_total":
+            return int(db.scalar("SELECT COALESCE(xp,0) FROM users WHERE user_id=?", (user_id,), 0))
     except Exception:
         return None
     return None

@@ -999,25 +999,107 @@ body.is-vip .hero .progress > i { background: linear-gradient(90deg, var(--gold-
   margin-top: 6px;
 }
 
-/* صفحهٔ ماموریت‌ها — همان ماموریت‌های ویژهٔ روز پنل شیشه‌ای */
-.missions-hero {
-  background:
-    radial-gradient(120% 140% at 85% -10%, rgba(229, 72, 77, 0.14), transparent 55%),
-    radial-gradient(100% 120% at 0% 110%, rgba(59, 130, 246, 0.12), transparent 55%),
-    var(--surface);
-}
-.mission-card { display: flex; align-items: center; gap: 10px; width: 100%; text-align: right; padding: 14px; }
-.mission-card .chev { color: var(--hint); flex-shrink: 0; }
-.mission-card:active { transform: scale(.99); }
-.mission-icon {
-  width: 44px; height: 44px; flex-shrink: 0;
+/* ---------------- Missions (طراحی جدید — جایگزین بلوک .missions-hero / .mission-card / .mission-icon) ----------------
+   فقط از توکن‌های موجود تم استفاده می‌شود (--surface, --surface-2, --accent, --accent-soft, --warn, --warn-soft,
+   --danger, --danger-soft, --hint, --text-2, --border, --radius) → روشن/تیره خودکار از [data-theme] خود اپ. */
+
+/* کارت خلاصهٔ پیشرفت */
+.mz-hero { padding: 16px; }
+.mz-hero .mz-head { display: flex; align-items: center; gap: 12px; }
+.mz-hero .mz-orb {
+  width: 46px; height: 46px; border-radius: 15px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  font-size: 22px; border-radius: 14px;
-  background: var(--surface-2); border: 1px solid var(--border);
+  background: var(--accent-soft); color: var(--accent);
 }
-.mission-card.cat-easy .mission-icon { background: rgba(16, 185, 129, 0.14); border-color: rgba(16, 185, 129, 0.35); }
-.mission-card.cat-medium .mission-icon { background: var(--warn-soft); border-color: rgba(242, 165, 22, 0.4); }
-.mission-card.cat-hard .mission-icon { background: var(--danger-soft); border-color: rgba(229, 72, 77, 0.4); }
+.mz-hero .mz-orb .ic { width: 24px; height: 24px; }
+.mz-hero h3 { margin: 0; font-size: 16px; font-weight: 800; line-height: 1.5; }
+.mz-hero .mz-sub { font-size: 12.5px; color: var(--hint); }
+.mz-hero .progress { height: 10px; border-radius: 5px; margin-top: 14px; }
+.mz-hero .progress > i { border-radius: 5px; }
+.mz-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.mz-stat { background: var(--surface-2); border-radius: 14px; padding: 8px 6px; text-align: center; }
+.mz-stat b { display: block; font-size: 16px; font-weight: 800; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.mz-stat span { font-size: 11px; color: var(--hint); font-weight: 600; }
+
+/* یادداشت‌ها و عنوان بخش‌ها */
+.mz-note { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--hint); margin: 14px 4px 0; line-height: 1.7; }
+.mz-note .ic { width: 16px; height: 16px; flex-shrink: 0; margin-top: 3px; color: var(--accent); }
+.mz-note b { color: var(--text-2); }
+.mz-sec {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 18px 4px 8px; font-size: 13.5px; font-weight: 800; color: var(--text-2);
+}
+.mz-sec .chip { height: 22px; font-size: 11px; padding: 0 8px; }
+.mz-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-left: 6px; background: var(--accent); vertical-align: middle; }
+.mz-dot.medium { background: var(--warn); }
+.mz-dot.hard { background: var(--danger); }
+
+/* کارت ماموریت */
+.mz-list { display: flex; flex-direction: column; gap: 10px; }
+.mz-card {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: right; padding: 14px;
+  position: relative; transition: transform .12s, background .15s;
+}
+.mz-card.mz-in { animation: mzIn .32s cubic-bezier(.2, .8, .2, 1) both; }
+.mz-card:active { transform: scale(.985); background: var(--surface-2); }
+.mz-ic {
+  width: 46px; height: 46px; border-radius: 15px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-soft); color: var(--accent);
+}
+.mz-ic .ic { width: 23px; height: 23px; }
+.tone-medium .mz-ic { background: var(--warn-soft); color: var(--warn); }
+.tone-hard .mz-ic { background: var(--danger-soft); color: var(--danger); }
+.mz-body { flex: 1; min-width: 0; }
+.mz-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mz-title { font-weight: 800; font-size: 14.5px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mz-desc {
+  font-size: 12.5px; color: var(--hint); line-height: 1.6; margin-top: 2px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.mz-prog { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
+.mz-prog .progress { flex: 1; height: 6px; }
+.mz-prog span { font-size: 11.5px; font-weight: 700; color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mz-card .chev { color: var(--hint); opacity: .6; flex-shrink: 0; width: 18px; height: 18px; }
+
+/* نشان پاداش XP — همان توکن‌های chip.warn (کهربایی) */
+.mz-xp {
+  display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 9px; border-radius: 13px;
+  font-size: 12.5px; font-weight: 800; white-space: nowrap; flex-shrink: 0;
+  background: var(--warn-soft); color: #b37400; font-variant-numeric: tabular-nums;
+}
+[data-theme="dark"] .mz-xp { color: var(--warn); }
+.mz-xp .ic { width: 14px; height: 14px; }
+.mz-xp.done { background: var(--accent-soft); color: var(--accent); }
+
+/* وضعیت تکمیل‌شده */
+.mz-card.is-done .mz-ic { background: var(--accent-soft); color: var(--accent); animation: mzPop .45s cubic-bezier(.2, .8, .2, 1); }
+.mz-card.is-done .mz-title { color: var(--text-2); }
+.mz-card.is-done .mz-desc { color: var(--accent); }
+
+/* دکمهٔ بارگذاری بیشتر */
+.mz-more { margin-top: 14px; }
+
+/* شیت جزئیات */
+.mz-sheet-ic {
+  width: 64px; height: 64px; border-radius: 20px; margin: 0 auto 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-soft); color: var(--accent);
+}
+.mz-sheet-ic .ic { width: 32px; height: 32px; }
+.mz-sheet-ic.tone-medium { background: var(--warn-soft); color: var(--warn); }
+.mz-sheet-ic.tone-hard { background: var(--danger-soft); color: var(--danger); }
+.mz-sheet-ic.is-done { background: var(--accent-soft); color: var(--accent); animation: mzPop .45s cubic-bezier(.2, .8, .2, 1); }
+.mz-sheet-desc { margin: 0; font-size: 14px; line-height: 1.8; color: var(--text-2); text-align: center; }
+.mz-sheet-prog { padding: 12px 14px; }
+.alert.mz-ok { background: var(--accent-soft); }
+.alert.mz-ok .ic { color: var(--accent); }
+
+@keyframes mzIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes mzPop { 0% { transform: scale(.7); } 60% { transform: scale(1.12); } 100% { transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .mz-card.mz-in, .mz-card.is-done .mz-ic, .mz-sheet-ic.is-done { animation: none; }
+}
 
 /* کارت جایزه روزانه */
 .daily-card {

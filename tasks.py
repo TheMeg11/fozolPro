@@ -789,6 +789,109 @@ TASKS = [
     {"id": "h60", "name": "۳۶۵۰ روز فعالیت", "desc": "حداقل ۳۶۵۰ روز (۱۰ سال) از ثبت‌نام شما بگذرد.", "xp": 3000, "category": "hard",
      "group": "days_active", "threshold": 3650,
      "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(julianday('now') - julianday(created_at), 0) FROM users WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 3650},
+
+    # ====== v4.8: ماموریت‌های رشد (دعوت، بازگشت روزانه، کشف قابلیت‌ها) ======
+    # همه سمت سرور از جدول‌های موجود تأیید می‌شوند؛ پاداش فقط یک‌بار از طریق xp_bonuses.
+    # ماموریت‌های حذف‌شده به‌دلیل نبود مکانیزم تأیید در Bot API بله:
+    #   «لینک در بیو» (getChat بله فیلد bio برنمی‌گرداند)، «اشتراک‌گذاری لینک» (رویداد قابل‌اتکا ندارد)
+    #   و «عضویت در کانال» (اد اجباری fail-closed از قبل عضوش کرده است).
+
+    # --- دعوت کاربر جدید (clicks.is_new_user=1 — همان منطق ثبت source='referral') ---
+    {"id": "g01", "name": "اولین دعوت موفق", "desc": "یک کاربر جدید با لینک تو برای اولین‌بار وارد ربات شود.", "xp": 60, "category": "easy",
+     "group": "invite_count", "threshold": 1,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND is_new_user=1", (uid,)).fetchone()[0] >= 1},
+    {"id": "g02", "name": "۳ دعوت موفق", "desc": "۳ کاربر جدید با لینک تو وارد ربات شوند.", "xp": 100, "category": "easy",
+     "group": "invite_count", "threshold": 3,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND is_new_user=1", (uid,)).fetchone()[0] >= 3},
+    {"id": "g03", "name": "۵ دعوت موفق", "desc": "۵ کاربر جدید با لینک تو وارد ربات شوند.", "xp": 200, "category": "medium",
+     "group": "invite_count", "threshold": 5,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND is_new_user=1", (uid,)).fetchone()[0] >= 5},
+    {"id": "g04", "name": "۱۰ دعوت موفق", "desc": "۱۰ کاربر جدید با لینک تو وارد ربات شوند.", "xp": 400, "category": "medium",
+     "group": "invite_count", "threshold": 10,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND is_new_user=1", (uid,)).fetchone()[0] >= 10},
+    {"id": "g05", "name": "۲۵ دعوت موفق", "desc": "۲۵ کاربر جدید با لینک تو وارد ربات شوند.", "xp": 900, "category": "hard",
+     "group": "invite_count", "threshold": 25,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND is_new_user=1", (uid,)).fetchone()[0] >= 25},
+    {"id": "g06", "name": "۵۰ دعوت موفق", "desc": "۵۰ کاربر جدید با لینک تو وارد ربات شوند — سفیر فضول‌یاب!", "xp": 2000, "category": "hard",
+     "group": "invite_count", "threshold": 50,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND is_new_user=1", (uid,)).fetchone()[0] >= 50},
+    {"id": "g23", "name": "۱۰۰ دعوت موفق", "desc": "۱۰۰ کاربر جدید با لینک تو وارد ربات شوند — افسانهٔ جذب فضول!", "xp": 3500, "category": "hard",
+     "group": "invite_count", "threshold": 100,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND is_new_user=1", (uid,)).fetchone()[0] >= 100},
+
+    # --- زنجیرهٔ روزانه (users.streak_count — ربات و مینی‌اپ هر دو به‌روز می‌کنند) ---
+    {"id": "g07", "name": "زنجیرهٔ ۳ روزه", "desc": "۳ روز پشت‌سرهم به ربات یا مینی‌اپ سر بزن.", "xp": 60, "category": "easy",
+     "group": "streak", "threshold": 3,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(streak_count,0) FROM users WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 3},
+    {"id": "g08", "name": "زنجیرهٔ ۷ روزه", "desc": "یک هفتهٔ کامل، هر روز سر بزن.", "xp": 150, "category": "medium",
+     "group": "streak", "threshold": 7,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(streak_count,0) FROM users WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 7},
+    {"id": "g09", "name": "زنجیرهٔ ۳۰ روزه", "desc": "یک ماه کامل، هر روز سر بزن — کارآگاه تمام‌وقت!", "xp": 600, "category": "hard",
+     "group": "streak", "threshold": 30,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(streak_count,0) FROM users WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 30},
+    {"id": "g24", "name": "زنجیرهٔ ۱۰۰ روزه", "desc": "۱۰۰ روز پشت‌سرهم سر بزن — استاد استریک‌ها!", "xp": 1200, "category": "hard",
+     "group": "streak", "threshold": 100,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(streak_count,0) FROM users WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 100},
+
+    # --- جایزهٔ روزانه (daily_bonus.total_claims) ---
+    {"id": "g10", "name": "اولین جایزهٔ روزانه", "desc": "از بخش پاداش‌ها، اولین جایزهٔ روزانه‌ات را بگیر.", "xp": 30, "category": "easy",
+     "group": "daily_claims", "threshold": 1,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(total_claims,0) FROM daily_bonus WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 1},
+    {"id": "g11", "name": "۷ جایزهٔ روزانه", "desc": "۷ بار جایزهٔ روزانه بگیر.", "xp": 120, "category": "medium",
+     "group": "daily_claims", "threshold": 7,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(total_claims,0) FROM daily_bonus WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 7},
+    {"id": "g12", "name": "۳۰ جایزهٔ روزانه", "desc": "۳۰ بار جایزهٔ روزانه بگیر.", "xp": 500, "category": "hard",
+     "group": "daily_claims", "threshold": 30,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(total_claims,0) FROM daily_bonus WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 30},
+    {"id": "g25", "name": "۱۰۰ جایزهٔ روزانه", "desc": "۱۰۰ بار جایزهٔ روزانه بگیر — بازنشدهٔ پاداش‌ها!", "xp": 1200, "category": "hard",
+     "group": "daily_claims", "threshold": 100,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(total_claims,0) FROM daily_bonus WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 100},
+
+    # --- کشف قابلیت‌ها ---
+    {"id": "g13", "name": "انتخاب نام نمایشی", "desc": "در پروفایل، یک نام نمایشی دلخواه برای خودت انتخاب کن.", "xp": 40, "category": "easy",
+     "check": lambda db, uid: bool(((db.conn.execute("SELECT display_name FROM users WHERE user_id=?", (uid,)).fetchone() or (None,))[0] or "").strip())},
+    {"id": "g14", "name": "اولین چرخش گردونه", "desc": "یک بار گردونهٔ شانس را بچرخان (VIP).", "xp": 50, "category": "easy",
+     "group": "wheel_spins", "threshold": 1,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(*) FROM wheel_spins WHERE user_id=?", (uid,)).fetchone()[0] >= 1},
+    {"id": "g15", "name": "۱۰ چرخش گردونه", "desc": "۱۰ بار گردونهٔ شانس را بچرخان (VIP).", "xp": 150, "category": "medium",
+     "group": "wheel_spins", "threshold": 10,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(*) FROM wheel_spins WHERE user_id=?", (uid,)).fetchone()[0] >= 10},
+    {"id": "g26", "name": "۵۰ چرخش گردونه", "desc": "۵۰ بار گردونهٔ شانس را بچرخان (VIP) — بختِ اصفهانی!", "xp": 600, "category": "hard",
+     "group": "wheel_spins", "threshold": 50,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(*) FROM wheel_spins WHERE user_id=?", (uid,)).fetchone()[0] >= 50},
+
+    # --- تله‌های اختصاصی (traps — فقط ردیف تله‌های سفارشی؛ لینک پیش‌فرض ردیف ندارد) ---
+    {"id": "g16", "name": "اولین تلهٔ اختصاصی", "desc": "یک تلهٔ اختصاصی با نام دلخواه بساز (VIP).", "xp": 80, "category": "easy",
+     "group": "trap_count", "threshold": 1,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(*) FROM traps WHERE owner_id=?", (uid,)).fetchone()[0] >= 1},
+    {"id": "g17", "name": "۳ تلهٔ اختصاصی", "desc": "۳ تلهٔ اختصاصی متفاوت بساز (VIP).", "xp": 150, "category": "medium",
+     "group": "trap_count", "threshold": 3,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(*) FROM traps WHERE owner_id=?", (uid,)).fetchone()[0] >= 3},
+    {"id": "g18", "name": "۱۰ تلهٔ اختصاصی", "desc": "۱۰ تلهٔ اختصاصی بساز و برای هر مخاطب، لینک مخصوص خودش را بگذار (VIP).", "xp": 400, "category": "hard",
+     "group": "trap_count", "threshold": 10,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(*) FROM traps WHERE owner_id=?", (uid,)).fetchone()[0] >= 10},
+
+    # --- جمع XP (users.xp — انعکاس کل فعالیت واقعی کاربر) ---
+    {"id": "g19", "name": "۵۰۰ XP جمع کن", "desc": "مجموع XP حاصله از کلیک، فضول و ماموریت‌ها به ۵۰۰ برسد.", "xp": 60, "category": "easy",
+     "group": "xp_total", "threshold": 500,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(xp,0) FROM users WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 500},
+    {"id": "g20", "name": "۲٬۵۰۰ XP جمع کن", "desc": "مجموع XP حاصله از فعالیت‌هایت به ۲٬۵۰۰ برسد.", "xp": 200, "category": "medium",
+     "group": "xp_total", "threshold": 2500,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(xp,0) FROM users WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 2500},
+    {"id": "g21", "name": "۱۰٬۰۰۰ XP جمع کن", "desc": "مجموع XP حاصله از فعالیت‌هایت به ۱۰٬۰۰۰ برسد — کارآگاه حرفه‌ای!", "xp": 600, "category": "hard",
+     "group": "xp_total", "threshold": 10000,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(xp,0) FROM users WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 10000},
+    {"id": "g22", "name": "۵۰٬۰۰۰ XP جمع کن", "desc": "مجموع XP حاصله از فعالیت‌هایت به ۵۰٬۰۰۰ برسد — افسانهٔ فضول‌یاب!", "xp": 1500, "category": "hard",
+     "group": "xp_total", "threshold": 50000,
+     "check": lambda db, uid: (db.conn.execute("SELECT COALESCE(xp,0) FROM users WHERE user_id=?", (uid,)).fetchone() or (0,))[0] >= 50000},
+
+    # --- پیام ناشناس دریافتی (مراحل بالاتر گروه anon_received) ---
+    {"id": "g27", "name": "۱۰۰ پیام ناشناس دریافت", "desc": "۱۰۰ پیام ناشناس از دیگران دریافت کن — محبوبِ فضول‌ها!", "xp": 350, "category": "medium",
+     "group": "anon_received", "threshold": 100,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(*) FROM anon_logs WHERE receiver_id=?", (uid,)).fetchone()[0] >= 100},
+    {"id": "g28", "name": "۲۵۰ پیام ناشناس دریافت", "desc": "۲۵۰ پیام ناشناس از دیگران دریافت کن — ستارهٔ چت ناشناس!", "xp": 800, "category": "hard",
+     "group": "anon_received", "threshold": 250,
+     "check": lambda db, uid: db.conn.execute("SELECT COUNT(*) FROM anon_logs WHERE receiver_id=?", (uid,)).fetchone()[0] >= 250},
 ]
 
 # ====== ثابت‌های کمکی ======
