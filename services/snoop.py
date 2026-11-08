@@ -11,7 +11,7 @@ from datetime import timedelta
 
 import settings
 from services import avatars, bale_api, db, legacy_bridge, vip
-from services.common import AppError, iso, mask_name, now, tehran_day_start
+from services.common import AppError, iso, now, tehran_day_start
 
 DEFAULT_TRAP_TITLE = "لینک اصلی من"
 
@@ -31,8 +31,12 @@ def ensure_default_trap(owner_id: int) -> dict:
 def limits(owner_id: int) -> dict:
     is_vip = vip.is_active(owner_id)
     custom = db.scalar("SELECT COUNT(*) FROM traps WHERE owner_id=?", (owner_id,), 0)
-    return {"max_traps": settings.VIP_MAX_TRAPS if is_vip else settings.FREE_MAX_TRAPS,
-            "custom_traps": custom, "reveal": is_vip}
+    # v4.7 (همگام‌سازی با پنل شیشه‌ای): سقف تله از همان تنظیم زندهٔ ربات
+    # (vip_max_traps — پیش‌فرض ۳ مثل ربات)؛ تلهٔ اختصاصی فقط برای VIP.
+    from services import bot_settings
+    max_traps = bot_settings.get_int("vip_max_traps", 3) if is_vip else 0
+    return {"max_traps": max_traps,
+            "custom_traps": custom, "reveal": is_vip, "vip_required": not is_vip}
 
 
 def create_trap(owner_id: int, title: str, bait: str = "") -> dict:
@@ -40,8 +44,12 @@ def create_trap(owner_id: int, title: str, bait: str = "") -> dict:
     if not 2 <= len(title) <= 40:
         raise AppError("VALIDATION_ERROR", "عنوان تله باید بین ۲ تا ۴۰ کاراکتر باشد.", 422)
     lim = limits(owner_id)
+    # v4.7 (همگام‌سازی با پنل شیشه‌ای): ساخت تلهٔ اختصاصی فقط برای VIP —
+    # در ربات هم add_trap برای غیر VIP با MY_TRAPS_VIP_ONLY رد می‌شود.
+    if not lim["reveal"]:
+        raise AppError("VIP_REQUIRED", "ساخت تلهٔ اختصاصی فقط برای اعضای VIP است.", 403)
     if lim["custom_traps"] >= lim["max_traps"]:
-        msg = f"به سقف {lim['max_traps']} تله رسیده‌اید." if lim["reveal"] else "کاربران عادی فقط یک تله اختصاصی دارند. با VIP تا ۱۰ تله بسازید."
+        msg = f"به سقف {lim['max_traps']} تله رسیده‌اید."
         raise AppError("LIMIT_REACHED", msg, 403)
     code = legacy_bridge.new_trap_code(owner_id)
     db.execute("INSERT INTO traps(trap_code, owner_id, label) VALUES(?,?,?)", (code, owner_id, title[:40]))
@@ -107,10 +115,10 @@ def visitors(owner_id: int, trap_code: str | None = None, cursor: int = 0, size:
                     "count": r["count"], "visited_at": r["last_at"], "first_at": r["first_at"]}
             items.append({**base, "masked": False, "name": name, "username": r["visitor_username"], "user_id": r["clicker_id"], "avatar": avatars.url_for(r["clicker_id"])})
         else:
-            # v4.4 حریم خصوصی: کاربر عادی هیچ اطلاعاتی از فضول‌هایش نمی‌بیند — فقط نام ماسک‌شده.
-            # نه تعداد مراجعه، نه کدام تله، نه زمان؛ و هرگز شناسهٔ عددی واقعی.
-            # reveal_code = کد base62 (همان کدگذاری لینک تله ربات) فقط برای خرید تک‌نفره.
-            items.append({"id": f"v{i + 1}", "masked": True, "name": mask_name(name),
+            # v4.7 (باگ «کل فضول‌ها»): کاربر عادی فقط نام فضول را می‌بیند (بدون ماسک —
+            # هم‌سو با پنل شیشه‌ای ربات)؛ نه تعداد مراجعه، نه کدام تله، نه زمان؛
+            # و هرگز شناسهٔ عددی واقعی. reveal_code = کد base62 فقط برای خرید تک‌نفره.
+            items.append({"id": f"v{i + 1}", "masked": True, "name": name,
                           "reveal_code": legacy_bridge.encode_id(r["clicker_id"])})
     nxt = cursor + size
     return {"items": items, "next_cursor": str(nxt) if nxt < total else None, "total": total}
@@ -137,7 +145,9 @@ def summary(owner_id: int) -> dict:
     default_visits = db.scalar("SELECT COUNT(*) FROM clicks WHERE owner_id=? AND trap_code IS NULL", (owner_id,), 0)
     traps[0]["visits"] = int(default_visits)
     chart = _day_counts(owner_id, 7)
-    total = db.scalar("SELECT COUNT(*) FROM clicks WHERE owner_id=?", (owner_id,), 0)
+    # v4.7 (باگ «کل فضول‌ها»): «کل» = تعداد فضول‌های یکتا (COUNT DISTINCT) — نه کل کلیک‌ها.
+    # نمودار «فعالیت ۷ روز اخیر» همچنان کلیک است (برچسبش بازدید/فعالیت است).
+    total = db.scalar("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=?", (owner_id,), 0)
     return {"link": default["link"], "traps": traps,
             "stats": {"today": chart[-1]["count"], "week": sum(x["count"] for x in chart),
                       "total": total, "chart": chart},
@@ -146,10 +156,13 @@ def summary(owner_id: int) -> dict:
 
 def quick_stats(owner_id: int) -> dict:
     default = ensure_default_trap(owner_id)
-    today = db.scalar("SELECT COUNT(*) FROM clicks WHERE owner_id=? AND clicked_at>=?",
-                      (owner_id, legacy_bridge.today_utc_str()), 0)
-    total = db.scalar("SELECT COUNT(*) FROM clicks WHERE owner_id=?", (owner_id,), 0)
-    distinct = db.scalar("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=?", (owner_id,), 0)
+    today_start = legacy_bridge.today_utc_str()
+    # v4.7 (باگ «کل فضول‌ها»): «کل فضول‌ها» و «فضول امروز» = فضول یکتا (COUNT DISTINCT clicker_id)
+    # — قبلاً COUNT(*) کلیک‌ها بود و عدد تکراریها را هم می‌شمرد.
+    today = db.scalar("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=? AND clicked_at>=?",
+                      (owner_id, today_start), 0)
+    total = db.scalar("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=?", (owner_id,), 0)
+    distinct = total
     return {"today": today, "total": total, "distinct": distinct, "link": default["link"]}
 
 

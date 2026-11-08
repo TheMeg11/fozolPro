@@ -986,3 +986,52 @@ body.is-vip .hero .progress > i { background: linear-gradient(90deg, var(--gold-
 .badge-card .muted { display: block; font-size: 10.5px; line-height: 1.7; }
 .badge-card .chip { margin-top: 7px; }
 .title-row { display: flex; align-items: center; gap: 6px; justify-content: center; margin-top: 6px; color: var(--gold-2); font-weight: 800; font-size: 13px; }
+
+/* =========================================================
+   v4.7 — ماموریت‌ها، پاداش‌ها، بیو، کانال اطلاع‌رسانی
+   ========================================================= */
+/* پیام قرمز زیرخط‌دار زیر کادر متن هایپرلینک (باگ بیو ۷۰ کاراکتر) */
+.bio-warn {
+  color: var(--danger);
+  font-weight: 800;
+  font-size: 12.5px;
+  text-decoration: underline;
+  margin-top: 6px;
+}
+
+/* صفحهٔ ماموریت‌ها — همان ماموریت‌های ویژهٔ روز پنل شیشه‌ای */
+.missions-hero {
+  background:
+    radial-gradient(120% 140% at 85% -10%, rgba(229, 72, 77, 0.14), transparent 55%),
+    radial-gradient(100% 120% at 0% 110%, rgba(59, 130, 246, 0.12), transparent 55%),
+    var(--surface);
+}
+.mission-card { display: flex; align-items: center; gap: 10px; width: 100%; text-align: right; padding: 14px; }
+.mission-card .chev { color: var(--hint); flex-shrink: 0; }
+.mission-card:active { transform: scale(.99); }
+.mission-icon {
+  width: 44px; height: 44px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; border-radius: 14px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.mission-card.cat-easy .mission-icon { background: rgba(16, 185, 129, 0.14); border-color: rgba(16, 185, 129, 0.35); }
+.mission-card.cat-medium .mission-icon { background: var(--warn-soft); border-color: rgba(242, 165, 22, 0.4); }
+.mission-card.cat-hard .mission-icon { background: var(--danger-soft); border-color: rgba(229, 72, 77, 0.4); }
+
+/* کارت جایزه روزانه */
+.daily-card {
+  background:
+    radial-gradient(130% 150% at 90% -20%, rgba(247, 201, 72, 0.18), transparent 55%),
+    var(--surface);
+}
+
+/* کارت کانال اطلاع‌رسانی @fzxinfo (بخش ارتباط/پشتیبانی) */
+.fzxinfo-card {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  text-align: right; padding: 12px 14px; cursor: pointer;
+}
+.fzxinfo-card:active { transform: scale(.99); }
+.fzxinfo-card .ic { color: var(--hint); }
+.fzxinfo-card .grow { min-width: 0; flex: 1; }
+.fzxinfo-card .bold { font-size: 14px; }

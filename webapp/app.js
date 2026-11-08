@@ -12,7 +12,7 @@
   /* ===================== Config ===================== */
   var CFG = Object.assign({
     appName: 'فضول‌یاب',
-    version: '4.4.0',
+    version: '4.7.0',
     apiBase: '/api',
     sdkGlobal: 'Bale',            // window.Bale.WebApp
     sdkFallbackGlobal: '',        // فقط برای توسعه؛ در محصول خالی بماند
@@ -280,6 +280,13 @@
     CHANNEL_JOIN_REQUIRED: 'برای ادامه ابتدا عضو کانال شوید.',
     BANNED: 'حساب شما مسدود شده است. با پشتیبانی تماس بگیرید.',
     PAYMENT_NOT_CONFIGURED: 'درگاه پرداخت هنوز فعال نشده؛ لطفاً بعداً تلاش کنید یا با پشتیبانی تماس بگیرید.',
+    /* v4.7: کدهای جدید ماموریت/پاداش/اخطار */
+    VIP_REQUIRED: 'این قابلیت فقط برای اعضای VIP است.',
+    ALREADY_CLAIMED: 'جایزهٔ امروز را قبلاً گرفته‌ای؛ فردا دوباره بیا!',
+    GIFT_INVALID: 'کد نامعتبر است.',
+    GIFT_EXHAUSTED: 'ظرفیت استفاده از این کد به پایان رسیده.',
+    GIFT_ALREADY_USED: 'شما قبلاً این کد را استفاده کرده‌اید.',
+    COOLDOWN: 'فرصت امروزت تمام شده — فردا بیا!',
     SERVER_ERROR: 'خطای داخلی سرور؛ لطفاً کمی بعد تلاش کنید.'
   };
   function errMsg(e) { return (e && e.message) || ERR_TEXT[e && e.code] || ERR_TEXT.SERVER_ERROR; }
@@ -398,10 +405,19 @@
     ];
     var FEATURES = ['نمایش نام و یوزرنیم کامل فضول‌ها', 'ساخت تا ۱۰ تله اختصاصی', 'امتیاز XP دوبرابر در همه فعالیت‌ها', 'یک چرخش اضافه گردونه در روز', 'نشان طلایی در جدول برترین‌ها'];
     var SEGMENTS = [
-      { label: '۲۰ XP', color: '#10b981' }, { label: 'پوچ', color: '#64748b' }, { label: '۵۰ XP', color: '#3b82f6' }, { label: '۱ روز VIP', color: '#e09b12' },
-      { label: '۱۰ XP', color: '#8b5cf6' }, { label: 'پوچ', color: '#475569' }, { label: '۱۰۰ XP', color: '#ec4899' }, { label: '۳ روز VIP', color: '#f97316' }
+      { label: '۲۰ XP', color: '#10b981' }, { label: '۵۰ XP', color: '#3b82f6' }, { label: '۱۰۰ XP', color: '#ec4899' }, { label: '۲۵۰ XP', color: '#8b5cf6' },
+      { label: '۵۰۰ XP', color: '#f97316' }, { label: '۱٬۰۰۰ XP', color: '#eab308' }, { label: '۱ روز VIP', color: '#e09b12' }, { label: '۳ روز VIP', color: '#ef4444' }
     ];
-    var PRIZES = [{ type: 'xp', amount: 20 }, { type: 'none' }, { type: 'xp', amount: 50 }, { type: 'vip', amount: 1 }, { type: 'xp', amount: 10 }, { type: 'none' }, { type: 'xp', amount: 100 }, { type: 'vip', amount: 3 }];
+    var PRIZES = [{ type: 'xp', amount: 20 }, { type: 'xp', amount: 50 }, { type: 'xp', amount: 100 }, { type: 'xp', amount: 250 }, { type: 'xp', amount: 500 }, { type: 'xp', amount: 1000 }, { type: 'vip', amount: 1 }, { type: 'vip', amount: 3 }];
+    /* v4.7: ماموریت‌های نمونه — همان ساختار /api/missions */
+    var MISSIONS_POOL = [
+      { id: 'e02', name: '۱۰ کلیک', desc: 'مجموعاً ۱۰ کلیک روی لینک شما انجام شود.', xp: 50, category: 'easy', category_info: { emoji: '🟢', title: 'آسان' }, progress: { value: 7, threshold: 10, pct: 70 } },
+      { id: 'e13', name: 'تنظیم لقب', desc: 'برای یکی از فضول‌هایتان یک لقب تنظیم کنید.', xp: 50, category: 'easy', category_info: { emoji: '🟢', title: 'آسان' }, progress: null },
+      { id: 'm07', name: '۵۰ فضول', desc: '۵۰ فضول یکتا در دام شما بیفتند.', xp: 250, category: 'medium', category_info: { emoji: '🟡', title: 'متوسط' }, progress: { value: 23, threshold: 50, pct: 46 } },
+      { id: 'h02', name: '۵۰۰ کلیک', desc: 'مجموعاً ۵۰۰ کلیک روی لینک شما انجام شود.', xp: 600, category: 'hard', category_info: { emoji: '🔴', title: 'سخت' }, progress: { value: 187, threshold: 500, pct: 37 } },
+      { id: 'm12', name: '۳ پیام ناشناس', desc: '۳ پیام ناشناس به فضول‌ها بفرستید.', xp: 150, category: 'medium', category_info: { emoji: '🟡', title: 'متوسط' }, progress: { value: 1, threshold: 3, pct: 33 } }
+    ];
+    db.missionsPage = 1;
 
     function err(code, status, msg, details) { return new ApiError(code, msg || ERR_TEXT[code], status, details); }
     function vipActive() { return !db.regularView && db.vip.active && new Date(db.vip.expires_at) > new Date(); }
@@ -412,7 +428,8 @@
       var trap = db.traps.filter(function (x) { return x.id === v.trap_id; })[0];
       var base = { id: v.id, trap_id: v.trap_id, trap_title: trap ? trap.title : '—', count: v.count, visited_at: v.visited_at, first_at: v.first_at };
       if (vipActive()) return Object.assign(base, { masked: false, name: v.name, username: v.username, user_id: v.user_id });
-      return Object.assign(base, { masked: true, name: mask(v.name), username: null, user_id: null });
+      /* v4.7: غیر VIP فقط نام واقعی را می‌بیند — هم‌سو با پنل شیشه‌ای ربات */
+      return Object.assign(base, { masked: true, name: v.name, username: null, user_id: null });
     }
     function vipView() {
       var active = vipActive();
@@ -420,8 +437,11 @@
       return { active: active, plan_title: active ? db.vip.plan_title : null, expires_at: active ? db.vip.expires_at : null, days_left: left };
     }
     function spinState() {
-      var next = db.lastSpin ? db.lastSpin + DAY : 0;
-      return { can_spin: Date.now() >= next, next_spin_at: next ? iso(next) : null };
+      /* v4.7: همان ربات — چرخ شانس VIP-only و یک بار در روز */
+      var active = vipActive();
+      var next = new Date(); next.setHours(24, 0, 0, 0);
+      var done = !!db.lastSpin;
+      return { can_spin: active && !done, next_spin_at: done ? iso(next.getTime()) : null, done_today: done, vip_required: !active };
     }
     function rankOf() { return 12; }
     function meView() {
@@ -430,7 +450,7 @@
         user: me, is_admin: isAdmin(), demo: true,
         vip: vipView(), xp: levelOf(db.xp), rank: rankOf(),
         streak: { count: db.streakCount || 4, shield: vipActive(), days_to_weekly: 3 },
-        snoop: { today: today, total: 187, distinct: 96, link: trapLink(db.traps[0].code) },
+        snoop: { today: 2, total: 96, distinct: 96, link: trapLink(db.traps[0].code) },
         wheel: spinState(),
         channels: { joined: db.channelJoined, required: db.channelJoined ? [] : channelList() },
         recent: db.visitors.slice(0, 3).map(visitorView),
@@ -486,7 +506,7 @@
     function findUser(id) { var u = db.users.filter(function (x) { return String(x.id) === String(id); })[0]; if (!u) throw err('NOT_FOUND', 404, 'کاربر پیدا نشد.'); return u; }
     function adminUserView(u) {
       var vip = u.is_vip && new Date(u.vip_expires_at) > new Date();
-      return { user: { id: u.id, name: u.name, username: u.username, joined_at: u.joined_at, last_seen: u.last_seen }, banned: u.banned, vip: { active: vip, expires_at: vip ? u.vip_expires_at : null, days_left: vip ? Math.ceil((new Date(u.vip_expires_at) - Date.now()) / DAY) : 0 }, xp: levelOf(u.xp), stats: { snoops: u.snoops, traps: u.traps, spins: Math.floor(u.xp / 120) }, payments: u.is_vip ? [{ id: 'INV-' + (u.id % 100000), plan_title: 'VIP یک‌ماهه', amount: 49000, status: 'paid', created_at: iso(Date.now() - 20 * DAY) }] : [] };
+      return { user: { id: u.id, name: u.name, username: u.username, joined_at: u.joined_at, last_seen: u.last_seen }, banned: u.banned, warnings: u.warns || 0, vip: { active: vip, expires_at: vip ? u.vip_expires_at : null, days_left: vip ? Math.ceil((new Date(u.vip_expires_at) - Date.now()) / DAY) : 0 }, xp: levelOf(u.xp), stats: { snoops: u.snoops, traps: u.traps, spins: Math.floor(u.xp / 120) }, payments: u.is_vip ? [{ id: 'INV-' + (u.id % 100000), plan_title: 'VIP یک‌ماهه', amount: 49000, status: 'paid', created_at: iso(Date.now() - 20 * DAY) }] : [] };
     }
 
     var R = [
@@ -502,8 +522,8 @@
         return {
           link: trapLink(db.traps[0].code),
           traps: db.traps.map(function (tr) { return Object.assign({}, tr, { link: trapLink(tr.code), visits: (counts[tr.id] || 0) + (tr.is_default ? 96 : 0) }); }),
-          stats: { today: week[6].count, week: week.reduce(function (s, x) { return s + x.count; }, 0), total: 187, chart: week },
-          limits: { max_traps: vipActive() ? 10 : 1, custom_traps: db.traps.filter(function (x) { return !x.is_default; }).length, reveal: vipActive() }
+          stats: { today: week[6].count, week: week.reduce(function (s, x) { return s + x.count; }, 0), total: 96, chart: week },
+          limits: { max_traps: vipActive() ? 3 : 0, custom_traps: db.traps.filter(function (x) { return !x.is_default; }).length, reveal: vipActive(), vip_required: !vipActive() }
         };
       }],
       ['GET', /^\/snoop\/radar$/, function () {
@@ -520,8 +540,10 @@
       ['POST', /^\/snoop\/traps$/, function (b) {
         var title = String((b && b.title) || '').trim(), bait = String((b && b.bait) || '').trim();
         if (title.length < 2 || title.length > 40) throw err('VALIDATION_ERROR', 422, 'عنوان تله باید بین ۲ تا ۴۰ کاراکتر باشد.');
+        /* v4.7: ساخت تله اختصاصی فقط برای VIP — هم‌سو با پنل شیشه‌ای */
+        if (!vipActive()) throw err('VIP_REQUIRED', 403, 'ساخت تلهٔ اختصاصی فقط برای اعضای VIP است.');
         var custom = db.traps.filter(function (x) { return !x.is_default; }).length;
-        if (custom >= (vipActive() ? 10 : 1)) throw err('LIMIT_REACHED', 403, vipActive() ? 'به سقف ۱۰ تله رسیده‌اید.' : 'کاربران عادی فقط یک تله اختصاصی دارند. با VIP تا ۱۰ تله بسازید.');
+        if (custom >= 3) throw err('LIMIT_REACHED', 403, 'به سقف ۳ تله رسیده‌اید.');
         var code = Math.random().toString(36).slice(2, 7);
         var tr = { id: ++db.nextId, title: title, bait: bait.slice(0, 200), code: code, is_default: false, created_at: iso(Date.now()) };
         db.traps.push(tr); return Object.assign({}, tr, { link: trapLink(code), visits: 0 });
@@ -591,16 +613,53 @@
       }],
       ['GET', /^\/wheel$/, function () { var s = spinState(); return Object.assign(s, { segments: SEGMENTS }); }],
       ['POST', /^\/wheel\/spin$/, function () {
-        if (!spinState().can_spin) throw err('COOLDOWN', 429, 'امروز گردونه را چرخانده‌اید. فردا دوباره سر بزنید!');
-        var weights = [22, 16, 14, 4, 22, 14, 6, 2], total = weights.reduce(function (a, c) { return a + c; }, 0), r = Math.random() * total, idx = 0;
+        /* v4.7: همان ربات — فقط VIP، بدون پاداش دوبرابر */
+        if (!vipActive()) throw err('VIP_REQUIRED', 403, 'چرخ شانس فقط برای اعضای VIP است!');
+        if (db.lastSpin) throw err('COOLDOWN', 429, 'فرصت امروزت تمام شده — فردا بیا!');
+        var weights = [28, 24, 19, 13, 8, 4, 3, 1], total = weights.reduce(function (a, c) { return a + c; }, 0), r = Math.random() * total, idx = 0;
         for (; idx < weights.length; idx++) { r -= weights[idx]; if (r <= 0) break; }
         idx = Math.min(idx, 7);
         var pr = PRIZES[idx]; db.lastSpin = Date.now();
-        var baseAmt = pr.amount, gained = pr.type === 'xp' ? pr.amount * (vipActive() ? 2 : 1) : pr.amount, doubled = pr.type === 'xp' && vipActive();
-        if (pr.type === 'xp') { db.xp += gained; db.weekXp += pr.amount; }
+        if (pr.type === 'xp') { db.xp += pr.amount; db.weekXp += pr.amount; }
         if (pr.type === 'vip') { var base = vipActive() ? new Date(db.vip.expires_at).getTime() : Date.now(); db.vip.active = true; db.vip.expires_at = iso(base + pr.amount * DAY); }
-        var label = pr.type === 'xp' ? (doubled ? fa(gained) + ' امتیاز XP — پاداش دوبرابر VIP 👑 (۲×' + fa(baseAmt) + ')' : fa(gained) + ' امتیاز XP') : pr.type === 'vip' ? fa(pr.amount) + ' روز اشتراک VIP' : 'پوچ! شانس فردا 😅';
-        return { index: idx, prize: { type: pr.type, amount: pr.amount, label: label, vip_doubled: doubled }, next_spin_at: iso(db.lastSpin + DAY), xp: levelOf(db.xp) };
+        var label = pr.type === 'xp' ? fa(pr.amount) + ' امتیاز XP' : fa(pr.amount) + ' روز اشتراک VIP';
+        var nxt = new Date(); nxt.setHours(24, 0, 0, 0);
+        return { index: idx, prize: { type: pr.type, amount: pr.amount, label: label, vip_doubled: false }, next_spin_at: iso(nxt.getTime()), xp: levelOf(db.xp) };
+      }],
+      /* ---- v4.7: ماموریت‌ها (دمو) ---- */
+      ['GET', /^\/missions$/, function (b, m, q) {
+        var p = Math.max(1, parseInt(q.get('page') || '1', 10) || 1);
+        var start = (p - 1) * 3 % MISSIONS_POOL.length;
+        var tasks = MISSIONS_POOL.slice(start, start + 3);
+        if (tasks.length < 3) tasks = tasks.concat(MISSIONS_POOL.slice(0, 3 - tasks.length));
+        return { page: p, tasks: tasks, total_remaining: 176 - 34, progress: { done: 34, total: 176, pct: 19 } };
+      }],
+      ['GET', /^\/missions\/([a-z0-9]+)$/, function (b, m) {
+        var t = MISSIONS_POOL.filter(function (x) { return x.id === m[1]; })[0];
+        if (!t) throw err('NOT_FOUND', 404, 'ماموریت پیدا نشد.');
+        return Object.assign({}, t, { done: false });
+      }],
+      /* ---- v4.7: پاداش‌ها (دمو) ---- */
+      ['GET', /^\/rewards$/, function () {
+        return {
+          daily: { done: !!db.dailyClaimed, streak: db.dailyClaimed ? 5 : 4, bonus_pct: 40, total_claims: 23,
+                   prizes: [{ label: '۳۰ XP', type: 'xp', value: 30 }, { label: '۶۰ XP', type: 'xp', value: 60 }, { label: '۱۰۰ XP', type: 'xp', value: 100 }, { label: '۲۰۰ XP', type: 'xp', value: 200 }, { label: '۵۰۰ XP', type: 'xp', value: 500 }, { label: '۱٬۰۰۰ XP', type: 'xp', value: 1000 }, { label: '۱ روز VIP', type: 'vip', value: 1 }] },
+          gift_codes: [{ code: 'WELCOME10', days: 10, remaining: 66 }],
+          wheel: spinState()
+        };
+      }],
+      ['POST', /^\/rewards\/claim$/, function () {
+        if (db.dailyClaimed) throw err('ALREADY_CLAIMED', 429, 'جایزهٔ امروز را قبلاً گرفته‌ای؛ فردا دوباره بیا!');
+        db.dailyClaimed = true; db.xp += 42;
+        return { prize: { type: 'xp', amount: 42, label: '۴۲ XP', bonus_pct: 40 }, streak: 5, milestone_vip_days: 0,
+                 state: { done: true, streak: 5, bonus_pct: 50, total_claims: 24, prizes: [] }, xp: levelOf(db.xp) };
+      }],
+      ['POST', /^\/gifts\/redeem$/, function (b) {
+        var code = String((b && b.code) || '').trim().toUpperCase();
+        if (code !== 'WELCOME10') throw err('GIFT_INVALID', 404, 'کد نامعتبر است.');
+        if (db.giftRedeemed) throw err('GIFT_ALREADY_USED', 409, 'شما قبلاً این کد را استفاده کرده‌اید.');
+        db.giftRedeemed = true;
+        return { days: 10, vip: vipView() };
       }],
       ['GET', /^\/support\/messages$/, function () { return { ticket: { status: 'open' }, messages: db.support }; }],
       ['POST', /^\/support\/messages$/, function (b) {
@@ -711,6 +770,15 @@
         return adminUserView(u);
       }],
       ['POST', /^\/admin\/users\/(\d+)\/ban$/, function (b, m) { requireAdmin(); var u = findUser(m[1]); if (u.id === me.id) throw err('VALIDATION_ERROR', 422, 'نمی‌توانید خودتان را مسدود کنید.'); u.banned = !!b.banned; return adminUserView(u); }],
+      /* v4.7: اخطار به کاربر + بازنشانی اخطارها (دمو) */
+      ['POST', /^\/admin\/users\/(\d+)\/warn$/, function (b, m) {
+        requireAdmin(); var u = findUser(m[1]); if (u.id === me.id) throw err('VALIDATION_ERROR', 422, 'نمی‌توانید به خودتان اخطار بدهید.');
+        u.warns = (u.warns || 0) + 1;
+        var banned = false;
+        if (u.warns >= 3) { u.banned = true; banned = true; }
+        return Object.assign(adminUserView(u), { warn: { count: u.warns, banned: banned } });
+      }],
+      ['POST', /^\/admin\/users\/(\d+)\/reset-warnings$/, function (b, m) { requireAdmin(); var u = findUser(m[1]); u.warns = 0; return adminUserView(u); }],
       ['POST', /^\/admin\/users\/(\d+)\/message$/, function (b, m) { requireAdmin(); findUser(m[1]); if (!b || !String(b.text || '').trim()) throw err('VALIDATION_ERROR', 422, 'متن پیام خالی است.'); return { sent: true }; }],
       ['GET', /^\/admin\/broadcast\/meta$/, function () {
         requireAdmin(); var jobs = Object.keys(db.jobs).map(function (k) { return db.jobs[k]; }).reverse();
@@ -1127,8 +1195,8 @@
   function VisitorItem(v) {
     return ListItem({
       lead: Avatar(v.name, v.user_id || v.id, { masked: v.masked, photo: v.avatar }),
-      title: v.masked ? h('span', null, h('span', { class: 'blurred' }, v.name), ' ') : v.name,
-      /* v4.4 حریم خصوصی: فضولِ قفل‌شده فقط نام دارد — بدون تله/زمان/تعداد */
+      /* v4.7 (فقط نام برای غیر VIP): نام واقعی بدون بلور — بقیهٔ جزئیات قفل است */
+      title: v.name,
       sub: v.masked ? 'هویت قفل است' : (v.trap_title + ' • ' + ago(v.visited_at)),
       end: [!v.masked && v.count > 1 ? h('span', { class: 'chip' }, '×' + fa(v.count)) : null, v.masked ? h('span', { class: 'chip gold' }, icon('lock')) : null],
       onClick: function () { visitorSheet(v); }
@@ -1138,19 +1206,29 @@
     Platform.share(text || 'ببین کی بیشتر از همه سرک می‌کشه 👀', link).then(function (r) { if (r === 'copied') toast('لینک کپی شد', 'success'); });
   }
   function copyLink(link) { copyText(link).then(function (ok) { toast(ok ? 'لینک کپی شد' : 'کپی انجام نشد؛ لینک را دستی انتخاب کنید', ok ? 'success' : 'error'); }); }
-  /* v4.3: کپی لینک به‌صورت هایپرلینک Markdown — [متن طعمه](لینک) + گزینهٔ لینک خالی */
+  /* v4.3: کپی لینک به‌صورت هایپرلینک Markdown — [متن طعمه](لینک) + گزینهٔ لینک خالی
+     v4.7 (باگ بیو): بایو بله حداکثر ۷۰ کاراکتر است؛ هایپرلینک خالی [](...) به‌ازای
+     هر لینک (طول لینک + ۴) کاراکتر می‌گیرد؛ برای لینک ۲۵کاراکتری = ۲۹ → متن حداکثر ۴۱.
+     از کاراکتر ۴۲م فقط پیام قرمزِ زیرخط‌دار زیر کادر نشان داده می‌شود — بدون هیچ
+     توضیح اضافه؛ دکمه‌های کپی همچنان کار می‌کنند. */
+  var BIO_MAX_CHARS = 70;
+  function bioTextLimit(link) { return BIO_MAX_CHARS - (String(link || '').length + 4); }
   function hyperlinkSheet(link, defaultText, title) {
-    var inp = h('input', { class: 'input', maxLength: 120, placeholder: 'مثلاً: یه عکس باحال گذاشتم، ببین 👀', value: defaultText || '' });
+    var limit = bioTextLimit(link); // برای لینک اصلی (۲۵ کاراکتر) = ۴۱
+    var inp = h('input', { class: 'input', maxLength: 200, placeholder: 'مثلاً: یه عکس باحال گذاشتم، ببین 👀', value: defaultText || '' });
     var preview = h('div', { class: 'md-preview ltr' }, '—');
+    /* پیام قرمز و زیرخط‌دار — فقط وقتی متن از حد بیو بلندتر شود */
+    var warn = h('div', { class: 'bio-warn', style: 'display:none' }, 'توی بیو جا نمیشه! کوتاه تر بنویس');
     function render() {
       var t = inp.value.trim();
       preview.textContent = t ? '[' + t + '](' + link + ')' : '[متن دلخواه](' + link + ')';
+      warn.style.display = inp.value.length > limit ? '' : 'none';
     }
     inp.addEventListener('input', render); render();
     var sh = openSheet({
       title: title || 'کپی لینک با متن طعمه',
       body: h('div', { class: 'stack' },
-        h('div', { class: 'field' }, h('label', null, 'متن دلخواه روی لینک'), inp,
+        h('div', { class: 'field' }, h('label', null, 'متن دلخواه روی لینک'), inp, warn,
           h('div', { class: 'hint' }, h('span', null, 'لینک به‌صورت هایپرلینک (Markdown) کپی می‌شود — هر جا Markdown پشتیبانی شود، فقط متن دیده می‌شود'))),
         h('div', { class: 'field' }, h('label', null, 'پیش‌نمایش کپی'), preview),
         h('div', { class: 'field' }, h('label', null, 'لینک خام'), h('div', { class: 'link-box' }, h('span', { class: 'ltr' }, link)))),
@@ -1195,17 +1273,20 @@
     /* v4.4: شمارندهٔ زندهٔ فضول‌های قفل‌شده — عدد واقعی، بدون هیچ اطلاعات هویتی */
     if (!me.vip.active && (me.snoop.distinct || 0) > 0) {
       wrap.appendChild(h('div', { class: 'gold-teaser', onclick: function () { Platform.haptic('light'); Router.tab('vip'); } }, icon('lock') || icon('crown'),
-        h('div', { class: 'txt' }, h('b', null, '🔒 همین الان ' + fa(me.snoop.distinct) + ' فضولِ قفل‌شده داری'), h('span', null, 'با VIP همه باز می‌شوند — اسم و آیدی کامل هر کدام.'))));
+        h('div', { class: 'txt' }, h('b', null, '🔒 همین الان ' + fa(me.snoop.distinct) + ' فضولِ نیمه‌قفل داری'), h('span', null, 'نام‌ها را می‌بینی؛ آیدی و یوزرنیم کامل با VIP باز می‌شود.'))));
     }
     wrap.appendChild(SectionTitle('دسترسی سریع'));
     function q(ic, label, color, fn, badge) {
       return h('button', { onclick: function () { Platform.haptic('light'); fn(); } }, badge ? h('span', { class: 'badge-new' }, badge) : null, h('span', { class: 'qi', style: { color: color } }, icon(ic)), label);
     }
+    /* v4.7 (باگ منوی دسترسی سریع): دکمهٔ VIP با «ماموریت‌ها» جایگزین شد —
+       همان ماموریت‌های ویژهٔ روز پنل شیشه‌ای، با نوار پیشرفت (صفحهٔ missions).
+       VIP همچنان از تب پایین و کارت‌های ارتقا در دسترس است. */
     wrap.appendChild(h('div', { class: 'card', style: 'padding:14px 8px' }, h('div', { class: 'quick' },
       q('link', 'کپی لینک', '#00a67e', function () { hyperlinkSheet(me.snoop.link); }),
       q('gift', 'گردونه', '#ec4899', function () { Router.go('wheel'); }, me.wheel.can_spin ? 'آماده' : null),
       q('trophy', 'برترین‌ها', '#e09b12', function () { Router.go('leaderboard'); }),
-      q('crown', 'VIP', '#8b5cf6', function () { Router.tab('vip'); }))));
+      q('target', 'ماموریت‌ها', '#e5484d', function () { Router.go('missions'); }))));
     if (!me.vip.active) {
       wrap.appendChild(h('div', { class: 'promo mt-12', onclick: function () { Router.tab('vip'); } }, icon('crown', 'big'),
         h('div', { class: 'grow' }, h('div', { class: 'bold' }, 'هویت فضول‌ها رو کشف کن!'), h('div', { class: 'small', style: 'opacity:.85' }, 'با ', h('b', null, 'VIP'), ' اسم و یوزرنیم کامل فضول‌ها را ببین.')),
@@ -1306,7 +1387,8 @@
       }
       function drawTraps(w, d) {
         var s = d.s;
-        w.appendChild(h('div', { class: 'alert mt-12' }, icon('info'), h('div', null, 'تله یک لینک اختصاصی با متن طعمه است. ', s.limits.reveal ? 'با VIP تا ' + fa(s.limits.max_traps) + ' تله می‌توانید بسازید.' : 'کاربران عادی ۱ تله اختصاصی دارند؛ با VIP تا ۱۰ تله.')));
+        /* v4.7 (همگام‌سازی با پنل شیشه‌ای): تلهٔ اختصاصی فقط برای VIP */
+        w.appendChild(h('div', { class: 'alert mt-12' }, icon('info'), h('div', null, 'تله یک لینک اختصاصی با متن طعمه است. ', s.limits.reveal ? 'با VIP تا ' + fa(s.limits.max_traps) + ' تله می‌توانید بسازید.' : 'ساخت تلهٔ اختصاصی ویژهٔ اعضای VIP است.')));
         s.traps.forEach(function (t) {
           w.appendChild(h('div', { class: 'card trap-card mt-12' },
             h('div', { class: 'row between' }, h('div', { class: 'row grow' }, h('div', { class: 'li-icon' + (t.is_default ? '' : ' info') }, icon(t.is_default ? 'link' : 'target')), h('div', { class: 'grow' }, h('div', { class: 'bold ellipsis' }, t.title), h('div', { class: 'small muted' }, 'ساخته‌شده ' + jdate(t.created_at)))), h('span', { class: 'chip accent' }, icon('eye'), fa(t.visits))),
@@ -1332,7 +1414,7 @@
             if (title.value.trim().length < 2) { toast('عنوان تله را وارد کنید', 'error'); title.focus(); return; }
             withLoading(btn, api('/snoop/traps', { method: 'POST', body: { title: title.value, bait: bait.value } })).then(function (t) {
               close(); toast('تله «' + t.title + '» ساخته شد', 'success'); Cache.del('snoop'); seg = 'traps'; ctx.reload();
-            }, function (e) { if (e.code === 'LIMIT_REACHED') { close(); vipUpsell('تله‌های بیشتر با VIP'); } else toast(errMsg(e), 'error'); });
+            }, function (e) { if (e.code === 'LIMIT_REACHED' || e.code === 'VIP_REQUIRED') { close(); vipUpsell('تله‌های بیشتر با VIP'); } else toast(errMsg(e), 'error'); });
           } }]
         });
         setTimeout(function () { title.focus(); }, 350);
@@ -1416,12 +1498,14 @@
 
   /* ===================== Chat view (shared: support & admin ticket) ===================== */
   function ChatView(ctx, o) {
-    // o: {fetch(), send(text), mine: 'user'|'admin', empty: Node, attach: fn, pollMs, lockedBanner(meta)}
+    // o: {fetch(), send(text), mine: 'user'|'admin', empty: Node, attach: fn, pollMs, lockedBanner(meta), topNode: Node}
     var chat = h('div', { class: 'chat' });
     var ta = h('textarea', { rows: 1, placeholder: o.placeholder || 'پیام خود را بنویسید…', maxLength: 2000 });
     var sendBtn = h('button', { class: 'send', disabled: true, 'aria-label': 'ارسال' }, icon('send'));
     var composer = h('div', { class: 'composer' }, o.attach ? h('button', { class: 'attach', 'aria-label': 'پیوست', onclick: o.attach }, icon('clip')) : null, ta, sendBtn);
     var lastJson = null, firstLoad = true, lockedNode = null;
+    /* v4.7: گرهٔ اختیاری بالای چت (مثلاً کارت کانال اطلاع‌رسانی در پشتیبانی) */
+    var topNode = o.topNode || null;
     /* v4.4: قفل کامپوزر (مثلاً پیام ناشناس فقط VIP) — بنر جای کامپوزر می‌نشیند */
     function applyLock(meta) {
       var want = o.lockedBanner ? o.lockedBanner(meta) : null;
@@ -1455,7 +1539,10 @@
       return o.fetch().then(function (d) {
         if (!ctx.alive) return;
         applyLock(d.meta || d);
-        if (ctx.body.firstChild !== chat) { ctx.body.replaceChildren(chat, lockedNode || composer); }
+        if (ctx.body.firstChild !== chat) {
+          if (topNode) ctx.body.replaceChildren(topNode, chat, lockedNode || composer);
+          else ctx.body.replaceChildren(chat, lockedNode || composer);
+        }
         if (o.onMeta) o.onMeta(d);
         var j = JSON.stringify(d.messages); if (j === lastJson) return; lastJson = j; messages = d.messages; paint(messages);
       }, function (e) {
@@ -1485,7 +1572,18 @@
       /* v4.4: پشتیبانی اولویت‌دار VIP — برچسب ⚡️ برای اعضای کارت طلایی */
       var isVipNow = !!(State.me && State.me.vip && State.me.vip.active);
       ctx.header({ title: 'پشتیبانی', subtitle: isVipNow ? '⚡️ اولویت VIP — پاسخ در اولویت ارسال می‌شود' : 'معمولاً در کمتر از ۲ ساعت پاسخ می‌دهیم', actions: [chipEl, h('div', { style: 'width:8px' })] });
+      /* v4.7 (بخش ارتباط): کارت کانال اطلاع‌رسانی @fzxinfo — هدایت مستقیم به کانال */
+      var infoCard = h('button', { class: 'card fzxinfo-card', onclick: function () {
+        Platform.haptic('light'); Platform.openLink(CFG.deepLinkBase + 'fzxinfo');
+      } },
+        h('div', { class: 'li-icon', style: 'background:var(--accent-soft);color:var(--accent)' }, icon('megaphone')),
+        h('div', { class: 'grow', style: 'text-align:right' },
+          h('div', { class: 'bold' }, 'کانال اطلاع‌رسانی فضول‌یاب'),
+          h('div', { class: 'small muted ltr' }, '@fzxinfo')),
+        icon('external'));
+      var topArea = h('div', { class: 'mb-12', style: 'margin-bottom:12px' }, infoCard);
       ChatView(ctx, {
+        topNode: topArea,
         mine: 'user',
         fetch: function () { return api('/support/messages'); },
         send: function (text) { return api('/support/messages', { method: 'POST', body: { text: text } }); },
@@ -1624,6 +1722,8 @@
         w.appendChild(SectionTitle('ارتباط'));
         w.appendChild(h('div', { class: 'list' },
           ListItem({ icon: 'bot', title: 'باز کردن ربات در بله', sub: '@' + CFG.botUsername, onClick: function () { Platform.openBot(); } }),
+          /* v4.7 (بخش ارتباط): کانال اطلاع‌رسانی @fzxinfo — هدایت مستقیم به کانال */
+          ListItem({ icon: 'megaphone', tone: 'warn', title: 'کانال اطلاع‌رسانی', sub: '@fzxinfo — خبرها و آپدیت‌ها', onClick: function () { Platform.haptic('light'); Platform.openLink(CFG.deepLinkBase + 'fzxinfo'); } }),
           ListItem({ icon: 'message', tone: 'info', title: 'چت پشتیبانی', sub: 'پاسخ‌ها هم‌زمان در بله و اینجا', onClick: function () { Router.go('support'); } }),
           ListItem({ icon: 'info', title: 'درباره ' + CFG.appName, onClick: aboutSheet })));
         if (State.demo) {
@@ -1820,10 +1920,86 @@
     }
   });
 
+  /* ===================== v4.7: Page: Missions (همان ماموریت‌های پنل شیشه‌ای) ===================== */
+  Router.def('missions', {
+    render: function (ctx) {
+      var page = 1;
+      ctx.header({ title: 'ماموریت‌ها', subtitle: 'ماموریت‌های ویژهٔ امروز', actions: [iconBtn('refresh', function () { ctx.reload(); }, 'به‌روزرسانی')] });
+      useData(ctx, 'missions:' + page, function () { return api('/missions?page=' + page); }, function (d) { draw(d); }, Skel.cards);
+      function draw(d) {
+        var w = h('div', null);
+        var pct = d.progress.pct || 0;
+        /* کارت پیشرفت کلی — همان نوار ماموریت‌های ربات */
+        w.appendChild(h('div', { class: 'card missions-hero' },
+          h('div', { class: 'row between', style: 'margin-bottom:8px' },
+            h('div', { class: 'card-title', style: 'margin:0' }, icon('target'), 'پیشرفت کارآگاهی'),
+            h('span', { class: 'chip accent' }, fa(pct) + '٪')),
+          h('div', { class: 'progress', style: 'height:12px' }, h('i', { style: { width: pct + '%' } })),
+          h('div', { class: 'row between small', style: 'margin-top:8px' },
+            h('span', { class: 'muted' }, fa(d.progress.done) + ' از ' + fa(d.progress.total) + ' ماموریت کامل شده'),
+            h('span', { class: 'muted' }, fa(d.total_remaining) + ' باقی‌مانده'))));
+        if (!d.tasks.length) {
+          w.appendChild(h('div', { class: 'card' }, Empty({ icon: 'trophy', title: 'همهٔ ماموریت‌ها کامل شد! 🏆', text: 'تو دیگه افسانهٔ فضول‌یابی — اسمت برای همیشه می‌درخشه!' })));
+          ctx.body.replaceChildren(w);
+          return;
+        }
+        w.appendChild(h('div', { class: 'small muted', style: 'margin:14px 4px 8px' }, '🔥 امروز ' + fa(d.tasks.length) + ' ماموریت ویژه داری — هر شب ساعت ۰۰:۰۰ ست جدید باز می‌شود'));
+        d.tasks.forEach(function (t, i) {
+          w.appendChild(missionCard(t, i));
+        });
+        w.appendChild(h('div', { class: 'small muted', style: 'margin:10px 4px 0' }, '⚡ پاداش هر ماموریت فقط یک‌بار می‌دهد؛ بقیه هم خودکار شمرده می‌شوند'));
+        /* دکمهٔ «ماموریت‌های دیگر» — همان ناوبری ربات */
+        if (d.total_remaining > 3) {
+          w.appendChild(h('button', { class: 'btn btn-secondary btn-block mt-12', onclick: function () {
+            Platform.haptic('light'); page = page + 1; Cache.del('missions:');
+            useData(ctx, 'missions:' + page, function () { return api('/missions?page=' + page); }, function (d2) { draw(d2); }, Skel.cards);
+          } }, icon('refresh'), 'ماموریت‌های دیگر'));
+        }
+        ctx.body.replaceChildren(w);
+      }
+      function missionCard(t, i) {
+        var ci = t.category_info || { emoji: '🎯', title: 'ماموریت' };
+        var prog = t.progress;
+        var card = h('button', { class: 'card mission-card cat-' + (t.category || 'easy'), onclick: function () { missionSheet(t); } },
+          h('div', { class: 'row', style: 'gap:12px' },
+            h('div', { class: 'mission-icon' }, ci.emoji),
+            h('div', { class: 'grow', style: 'min-width:0' },
+              h('div', { class: 'row between', style: 'gap:8px' },
+                h('div', { class: 'bold ellipsis' }, t.name),
+                h('span', { class: 'chip gold', style: 'flex-shrink:0' }, '+' + fa(t.xp) + ' XP')),
+              h('div', { class: 'small muted', style: 'margin-top:2px' }, ci.title),
+              prog ? h('div', { class: 'progress', style: 'margin-top:8px' }, h('i', { style: { width: Math.min(100, prog.pct) + '%' } })) : null,
+              prog ? h('div', { class: 'row between small', style: 'margin-top:6px' },
+                h('span', { class: 'muted' }, fa(prog.value) + ' از ' + fa(prog.threshold)),
+                h('span', { class: 'muted' }, fa(prog.pct) + '٪')) : null)),
+          icon('chevL', 'chev'));
+        return card;
+      }
+      function missionSheet(t) {
+        var ci = t.category_info || { emoji: '🎯', title: 'ماموریت' };
+        var prog = t.progress;
+        openSheet({
+          title: 'جزئیات ماموریت',
+          body: h('div', { class: 'stack' },
+            h('div', { class: 'center', style: 'margin-bottom:4px' },
+              h('div', { class: 'mission-icon', style: 'width:64px;height:64px;font-size:32px;margin:0 auto 8px' }, ci.emoji),
+              h('h3', { style: 'margin:0 0 4px;font-weight:800' }, t.name),
+              h('div', null, h('span', { class: 'chip accent' }, ci.title), ' ', h('span', { class: 'chip gold' }, '+' + fa(t.xp) + ' XP'))),
+            h('div', { class: 'card info-rows' },
+              infoRow('توضیح', t.desc || '—'),
+              prog ? infoRow('پیشرفت', fa(prog.value) + ' از ' + fa(prog.threshold) + ' (' + fa(prog.pct) + '٪)') : null),
+            prog ? h('div', { class: 'progress', style: 'height:12px' }, h('i', { style: { width: Math.min(100, prog.pct) + '%' } })) : null,
+            h('div', { class: 'alert mt-12', style: 'text-align:right' }, icon('bolt'), h('div', null, 'وقتی ماموریت کامل شود، ', h('b', null, '+' + fa(t.xp) + ' XP'), ' خودکار به حسابت اضافه می‌شود.'))),
+          actions: [{ text: 'باشه، چشم!', onClick: function (close) { close(); } }]
+        });
+      }
+    }
+  });
+
   /* ===================== Page: Wheel ===================== */
   Router.def('wheel', {
     render: function (ctx) {
-      ctx.header({ title: 'گردونه شانس', subtitle: 'روزی یک بار، جایزه ببر!' });
+      ctx.header({ title: 'پاداش‌ها', subtitle: 'گردونه شانس، جایزه روزانه و کد هدیه' });
       var rotation = 0, spinning = false;
       useData(ctx, 'wheel', function () { return api('/wheel'); }, draw, function () { return h('div', null, h('div', { class: 'sk sk-circle', style: 'width:min(84vw,320px);aspect-ratio:1;margin:12px auto 18px' }), Skel.block(52, 14)); });
       function wheelSvg(segs) {
@@ -1856,6 +2032,14 @@
           ctx.body.replaceChildren(h('div', { class: 'card' }, Empty({ icon: 'lock', title: 'گردونه شانس فعلاً غیرفعال است', text: 'به‌زودی توسط مدیریت فعال می‌شود.' })));
           return;
         }
+        /* v4.7 (همگام‌سازی با پنل شیشه‌ای): چرخ شانس فقط برای VIP — همان ربات */
+        if (d.vip_required) {
+          w.appendChild(h('div', { class: 'card center', style: 'padding:20px 16px' },
+            h('div', { class: 'g-icon', style: 'margin:0 auto 10px;background:linear-gradient(135deg,#f7c948,#e09b12);color:#fff' }, icon('crown')),
+            h('h3', { style: 'margin:0 0 6px;font-weight:800' }, 'چرخ شانس ویژهٔ VIP'),
+            h('p', { class: 'muted small', style: 'margin:0 0 12px' }, 'جک‌پات ۱٬۰۰۰ XP و تا ۳ روز VIP — روزی یک چرخش رایگان برای اعضای کارت طلایی.'),
+            h('button', { class: 'btn btn-gold', onclick: function () { Router.tab('vip'); } }, icon('crown'), 'فعال‌سازی VIP')));
+        } else {
         var wrap = h('div', { class: 'wheel-wrap' }, h('div', { html: '<svg class="pointer" viewBox="0 0 34 42"><path d="M17 42 2 12A15 15 0 1 1 32 12Z" fill="#e5484d"/><circle cx="17" cy="15" r="6" fill="#fff"/></svg>' }), h('div', { class: 'hub' }, icon('gift')));
         var holder = h('div', { style: 'width:100%;height:100%', html: wheelSvg(d.segments) });
         wrap.insertBefore(holder, wrap.firstChild);
@@ -1867,12 +2051,15 @@
           btnArea.appendChild(btn);
         } else {
           var cd = h('div', { class: 'countdown' }, '--:--:--');
-          btnArea.appendChild(h('div', { class: 'card center' }, h('div', { class: 'muted small' }, 'چرخش بعدی تا'), cd, h('div', { class: 'small muted' }, 'هر روز یک فرصت جدید داری')));
+          btnArea.appendChild(h('div', { class: 'card center' }, h('div', { class: 'muted small' }, 'چرخش بعدی تا'), cd, h('div', { class: 'small muted' }, 'هر روز ساعت ۰۰:۰۰ فرصت جدید باز می‌شود')));
           var tick = function () { var s = Math.max(0, Math.floor((new Date(d.next_spin_at) - Date.now()) / 1000)); if (s === 0) { Cache.del('wheel'); ctx.reload(); return; } cd.textContent = faDigits([Math.floor(s / 3600), Math.floor(s % 3600 / 60), s % 60].map(function (x) { return (x < 10 ? '0' : '') + x; }).join(':')); };
           tick(); var iv = setInterval(tick, 1000); ctx.onCleanup(function () { clearInterval(iv); });
         }
         w.appendChild(btnArea);
-        w.appendChild(h('div', { class: 'card mt-12' }, h('div', { class: 'card-title' }, icon('gift'), 'جوایز ممکن'), h('div', { class: 'chips', style: 'flex-wrap:wrap' }, d.segments.filter(function (s) { return s.label !== 'پوچ'; }).map(function (s) { return h('span', { class: 'chip', style: { background: s.color, color: '#fff', borderColor: 'transparent' } }, s.label); }))));
+        w.appendChild(h('div', { class: 'card mt-12' }, h('div', { class: 'card-title' }, icon('gift'), 'جوایز ممکن'), h('div', { class: 'chips', style: 'flex-wrap:wrap' }, d.segments.map(function (s) { return h('span', { class: 'chip', style: { background: s.color, color: '#fff', borderColor: 'transparent' } }, s.label); }))));
+        }
+        /* v4.7 (هم‌ارز منوی 🎁 پاداش‌های ربات): جایزه روزانه + کد هدیه */
+        w.appendChild(rewardsArea(ctx));
         ctx.body.replaceChildren(w);
       }
       function spin(d, svg, btn) {
@@ -1885,17 +2072,88 @@
           setTimeout(function () {
             clearInterval(ticks); spinning = false; Platform.haptic(r.prize.type === 'none' ? 'warning' : 'success');
             Cache.del('wheel'); Cache.del('me'); refreshMe();
-            /* v4.3: شفافیت پاداش دوبرابر VIP — کاربر بداند چرا بیشتر از عدد روی گردونه گرفت */
-            var vipNote = r.prize.vip_doubled ? h('div', { class: 'alert', style: 'margin-top:12px;text-align:right' }, icon('crown'), h('div', null,
-              h('b', null, 'پاداش دوبرابر VIP 👑'), h('div', { class: 'small muted' }, 'به‌خاطر اشتراک VIP، جایزهٔ XP شما دوبرابر محاسبه شد.'))) : null;
             openSheet({ title: '', body: h('div', { class: 'center' }, h('div', { style: 'font-size:56px;line-height:1.2' }, r.prize.type === 'none' ? '😅' : r.prize.type === 'vip' ? '👑' : '🎉'),
-              h('h3', { style: 'margin:6px 0;font-weight:800' }, r.prize.type === 'none' ? 'این بار پوچ شد!' : 'تبریک! برنده شدی'), h('p', { class: 'muted', style: 'margin:0 0 6px' }, r.prize.label), vipNote),
+              h('h3', { style: 'margin:6px 0;font-weight:800' }, r.prize.type === 'none' ? 'این بار پوچ شد!' : 'تبریک! برنده شدی'), h('p', { class: 'muted', style: 'margin:0 0 6px' }, r.prize.label)),
               actions: [{ text: 'عالی', onClick: function (close) { close(); } }], onClose: function () { if (ctx.alive) ctx.reload(); } });
           }, 5100);
-        }, function (e) { spinning = false; btn.disabled = false; toast(errMsg(e), 'error'); if (e.code === 'COOLDOWN') { Cache.del('wheel'); ctx.reload(); } });
+        }, function (e) { spinning = false; btn.disabled = false; toast(errMsg(e), 'error'); if (e.code === 'COOLDOWN' || e.code === 'VIP_REQUIRED') { Cache.del('wheel'); ctx.reload(); } });
       }
     }
   });
+
+  /* ===================== v4.7: Rewards (جایزه روزانه + کد هدیه — هم‌ارز منوی 🎁 ربات) ===================== */
+  function rewardsArea(ctx) {
+    var area = h('div', null);
+    area.appendChild(SectionTitle('بقیهٔ پاداش‌ها'));
+    var holder = h('div', null);
+    area.appendChild(holder);
+    api('/rewards').then(function (d) {
+      if (!ctx.alive) return;
+      holder.replaceChildren(dailyBonusCard(ctx, d.daily), giftCodeCard(ctx, d.gift_codes));
+    }, function () { holder.replaceChildren(h('div', { class: 'small muted' }, 'پاداش‌ها فعلاً در دسترس نیست.')); });
+    return area;
+  }
+  function dailyBonusCard(ctx, daily) {
+    var card = h('div', { class: 'card mt-12 daily-card' });
+    card.appendChild(h('div', { class: 'row between' },
+      h('div', { class: 'card-title', style: 'margin:0' }, icon('calendar'), 'جایزه روزانه'),
+      h('span', { class: 'chip accent' }, '🔥 استریک ' + fa(daily.streak || 0) + ' روز')));
+    card.appendChild(h('div', { class: 'small muted', style: 'margin:6px 0 10px' },
+      'هر روز ساعت ۰۰:۰۰ ریست می‌شود؛ هر روز پیوسته ‎+۱۰٪‎ پاداش اضافه تا سقف ۱۰۰٪.' +
+      (daily.bonus_pct ? ' (پاداش فعلی: ' + fa(daily.bonus_pct) + '٪)' : '')));
+    card.appendChild(h('div', { class: 'chips', style: 'flex-wrap:wrap;margin-bottom:10px' },
+      (daily.prizes || []).map(function (p) { return h('span', { class: 'chip' + (p.type === 'vip' ? ' gold' : '') }, p.type === 'vip' ? icon('crown') : icon('bolt'), p.label); })));
+    if (daily.done) {
+      card.appendChild(h('div', { class: 'alert mt-8' }, icon('check'), h('div', null, 'جایزهٔ امروز گرفته شد ✅ — فردا دوباره بیا!')));
+    } else {
+      var btn = h('button', { class: 'btn btn-primary btn-block', onclick: function () {
+        withLoading(btn, api('/rewards/claim', { method: 'POST' })).then(function (r) {
+          Cache.del('me'); Cache.del('rewards'); refreshMe();
+          openSheet({ title: '', body: h('div', { class: 'center' },
+            h('div', { style: 'font-size:56px;line-height:1.2' }, r.prize.type === 'vip' ? '👑' : '🎉'),
+            h('h3', { style: 'margin:6px 0;font-weight:800' }, 'جایزهٔ امروزت!'),
+            h('p', { class: 'muted', style: 'margin:0 0 4px' }, r.prize.label),
+            r.prize.bonus_pct ? h('p', { class: 'small muted', style: 'margin:0 0 4px' }, '🔥 پاداش استریک: +' + fa(r.prize.bonus_pct) + '٪') : null,
+            r.milestone_vip_days ? h('p', { class: 'small', style: 'margin:4px 0 0;color:var(--gold)' }, '🎁 جایزهٔ استریک ' + fa(r.streak) + ' روزه: ' + fa(r.milestone_vip_days) + ' روز VIP رایگان!') : null,
+            h('p', { class: 'small muted', style: 'margin:8px 0 0' }, 'زنجیرهٔ ' + fa(r.streak) + ' روزه ادامه دارد — فردا هم بیا!')),
+            actions: [{ text: 'عالی', onClick: function (close) { close(); } }], onClose: function () { if (ctx.alive) ctx.reload(); } });
+        }, function (e) { toast(errMsg(e), 'error'); if (e.code === 'ALREADY_CLAIMED') { Cache.del('rewards'); ctx.reload(); } });
+      } }, icon('gift'), 'دریافت جایزه امروز');
+      card.appendChild(btn);
+    }
+    return card;
+  }
+  function giftCodeCard(ctx, codes) {
+    var card = h('div', { class: 'card mt-12' });
+    card.appendChild(h('div', { class: 'row between' },
+      h('div', { class: 'card-title', style: 'margin:0' }, icon('hash'), 'کد هدیه'),
+      h('span', { class: 'chip' }, fa((codes || []).length) + ' کد فعال')));
+    var list = h('div', { class: 'list mt-8' });
+    (codes || []).forEach(function (g) {
+      list.appendChild(ListItem({
+        lead: h('div', { class: 'li-icon gold' }, icon('gift')),
+        title: g.code, sub: fa(g.days) + ' روز VIP • ظرفیت باقی‌مانده: ' + fa(g.remaining),
+        onClick: function () { redeemGift(g.code); }
+      }));
+    });
+    if ((codes || []).length) card.appendChild(list);
+    /* کد دستی — همان «اگر کد هدیه‌ای دارید مستقیم بفرستید» ربات */
+    var inp = h('input', { class: 'input ltr', placeholder: 'مثلاً WELCOME10', maxLength: 24, style: 'text-align:left' });
+    var btn = h('button', { class: 'btn btn-secondary btn-sm', onclick: function () {
+      var code = inp.value.trim();
+      if (code.length < 2) { toast('کد هدیه را وارد کن', 'error'); inp.focus(); return; }
+      redeemGift(code);
+    } }, icon('check'), 'فعال‌سازی');
+    card.appendChild(h('div', { class: 'btn-row mt-8' }, inp, btn));
+    function redeemGift(code) {
+      withLoading(card, api('/gifts/redeem', { method: 'POST', body: { code: code } })).then(function (r) {
+        Cache.del('me'); Cache.del('rewards'); refreshMe();
+        toast('🎁 ' + fa(r.days) + ' روز VIP فعال شد!', 'success');
+        if (ctx.alive) ctx.reload();
+      }, function (e) { toast(errMsg(e), 'error'); });
+    }
+    return card;
+  }
 
   /* ===================== Admin pages ===================== */
   Router.def('admin', {
@@ -1994,7 +2252,9 @@
           h('div', { class: 'row mt-8', style: 'justify-content:center' }, vipChip(d.vip), d.banned ? h('span', { class: 'chip danger' }, icon('ban'), 'مسدود') : null)));
         w.appendChild(h('div', { class: 'card info-rows' },
           infoRow('شناسه', h('span', { class: 'ltr' }, String(u.id))), infoRow('تاریخ عضویت', jdate(u.joined_at)), infoRow('آخرین فعالیت', ago(u.last_seen)),
-          infoRow('سطح / XP', 'سطح ' + fa(d.xp.level) + ' • ' + fa(d.xp.xp) + ' XP'), infoRow('فضول‌های ثبت‌شده', fa(d.stats.snoops)), infoRow('تله‌ها', fa(d.stats.traps))));
+          infoRow('سطح / XP', 'سطح ' + fa(d.xp.level) + ' • ' + fa(d.xp.xp) + ' XP'), infoRow('فضول‌های ثبت‌شده', fa(d.stats.snoops)), infoRow('تله‌ها', fa(d.stats.traps)),
+          /* v4.7: اخطارها — همان پروندهٔ کاربر پنل شیشه‌ای */
+          infoRow('اخطارها', (d.warnings || 0) >= 3 ? h('span', { class: 'chip danger' }, fa(d.warnings || 0) + ' — مسدود') : (d.warnings || 0) > 0 ? h('span', { class: 'chip warn' }, fa(d.warnings || 0) + ' از ۳') : fa(d.warnings || 0))));
         w.appendChild(SectionTitle('اشتراک VIP'));
         w.appendChild(h('div', { class: 'card' },
           h('div', { class: 'row between' }, h('div', null, h('div', { class: 'bold' }, d.vip.active ? 'فعال • ' + fa(d.vip.days_left) + ' روز' : 'غیرفعال'), d.vip.active ? h('div', { class: 'small muted' }, 'انقضا: ' + jdate(d.vip.expires_at)) : null), h('div', { class: 'li-icon gold' }, icon('crown'))),
@@ -2006,6 +2266,9 @@
         w.appendChild(h('div', { class: 'list' },
           ListItem({ icon: 'send', tone: 'info', title: 'ارسال پیام مستقیم', sub: 'از طرف ربات در چت بله', onClick: sendMsg }),
           ListItem({ icon: 'inbox', title: 'گفتگوی پشتیبانی', onClick: function () { Router.go('admin-ticket', { user_id: u.id, name: u.name }); } }),
+          /* v4.7: اخطار به کاربر — همان دکمهٔ پنل شیشه‌ای؛ اخطار سوم = مسدودیت خودکار */
+          ListItem({ icon: 'alert', tone: 'warn', title: 'اخطار به کاربر', sub: (d.warnings || 0) + ' از ۳ — اخطار سوم مسدود می‌کند', onClick: warnUser }),
+          d.warnings ? ListItem({ icon: 'refresh', tone: '', title: 'بازنشانی اخطارها', onClick: resetWarns }) : null,
           ListItem({ icon: 'ban', tone: 'danger', title: d.banned ? 'رفع مسدودی' : 'مسدود کردن کاربر', onClick: function () { toggleBan(d); } })));
         w.appendChild(SectionTitle('پرداخت‌ها'));
         w.appendChild(d.payments.length ? h('div', { class: 'list' }, d.payments.map(function (p) { return ListItem({ icon: 'receipt', title: p.plan_title, sub: jdate(p.created_at, true), end: h('div', { style: 'text-align:left' }, h('div', { class: 'bold', style: 'color:var(--text)' }, toman(p.amount)), statusChip(p.status)) }); }))
@@ -2041,6 +2304,28 @@
           withLoading(btn, api('/admin/users/' + id + '/message', { method: 'POST', body: { text: ta.value } })).then(function () { close(); toast('پیام ارسال شد', 'success'); }, function (e) { toast(errMsg(e), 'error'); });
         } }] });
         setTimeout(function () { ta.focus(); }, 350);
+      }
+      /* v4.7: اخطار به کاربر (با دلیل اختیاری) + بازنشانی اخطارها */
+      function warnUser() {
+        var reason = h('input', { class: 'input', maxLength: 200, placeholder: 'دلیل اخطار (اختیاری) — مثلاً: ارسال اسپم' });
+        openSheet({
+          title: 'اخطار به کاربر',
+          body: h('div', { class: 'stack' },
+            h('div', { class: 'alert warn' }, icon('alert'), h('div', null, 'پیام اخطار از طرف ربات برای کاربر ارسال می‌شود. اخطار سوم ', h('b', null, 'خودکار مسدود می‌کند'), '.')),
+            h('div', { class: 'field' }, h('label', null, 'دلیل اخطار'), reason)),
+          actions: [{ text: 'ثبت اخطار', icon: 'alert', onClick: function (close, btn) {
+            withLoading(btn, update(api('/admin/users/' + id + '/warn', { method: 'POST', body: { reason: reason.value.trim() } }))).then(function (r) {
+              close();
+              if (r.warn && r.warn.banned) toast('اخطار ۳ از ۳ ثبت شد — کاربر مسدود شد', 'error');
+              else toast('اخطار ثبت و به کاربر اعلام شد (' + fa(r.warn.count) + ' از ۳)', 'success');
+            }, function (e) { toast(errMsg(e), 'error'); });
+          } }]
+        });
+      }
+      function resetWarns() {
+        confirmDialog({ title: 'بازنشانی اخطارها', text: 'شمارندهٔ اخطارهای این کاربر صفر می‌شود.', ok: 'بازنشانی', icon: 'refresh' }).then(function (ok) {
+          if (ok) update(api('/admin/users/' + id + '/reset-warnings', { method: 'POST' })).then(function () { toast('اخطارها بازنشانی شد', 'success'); }, function (e) { toast(errMsg(e), 'error'); });
+        });
       }
     }
   });
@@ -2622,7 +2907,7 @@
           Shell.renderNav();
           var p = Platform.startParam(), tabs = ['home', 'snoop', 'vip', 'chat', 'support', 'profile', 'admin'];
           Router.start(tabs.indexOf(p) >= 0 && (p !== 'admin' || me.is_admin) ? p : 'home');
-          if (p === 'wheel' || p === 'leaderboard') Router.go(p);
+          if (p === 'wheel' || p === 'leaderboard' || p === 'missions') Router.go(p);
           if (me.channels && me.channels.joined === false) Gate.show(me.channels.required);
           if (me.is_admin) api('/admin/tickets').then(function (t) { Shell.setBadge('admin', t.items.filter(function (x) { return x.unread; }).length); }, function () { /* noop */ });
           sp.classList.add('hide'); setTimeout(function () { sp.remove(); }, 320);

@@ -100,8 +100,12 @@ def set_banned(user_id: int, banned: bool) -> None:
     db.execute("UPDATE users SET is_banned=?, blocked_by_admin=? WHERE user_id=?", (flag, flag, user_id))
 
 
-def add_xp(user_id: int, amount: int) -> dict:
-    if legacy_bridge.is_vip(user_id):
+def add_xp(user_id: int, amount: int, vip_double: bool = True) -> dict:
+    """افزودن XP + به‌روزرسانی level_cached.
+
+    vip_double=False → همان رفتار award_bonus_xp ربات (بدون دوبرابر شدن VIP)؛
+    برای پاداش‌های ماموریت/جایزه روزانه که خودشان عدد نهایی را حساب می‌کنند."""
+    if vip_double and legacy_bridge.is_vip(user_id):
         amount *= 2  # XP دوبرابر VIP
     wk = week_key()
     with db.tx() as c:

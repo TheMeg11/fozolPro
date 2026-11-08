@@ -26,7 +26,7 @@ import settings
 from auth import InitDataError, validate_init_data
 from services import admin as admin_svc
 from services import anon as anon_svc
-from services import avatars, bale_api, bot_settings, channels, db, snoop, support, users, vip, wheel
+from services import avatars, bale_api, bot_settings, channels, db, missions, rewards, snoop, support, users, vip, wheel
 from services import profile as profile_svc
 from services.common import AppError
 
@@ -143,6 +143,14 @@ class GiftIn(BaseModel):
     code: str | None = Field(default=None, max_length=24)
 
 
+class RedeemIn(BaseModel):
+    code: str = Field(min_length=2, max_length=24)
+
+
+class WarnIn(BaseModel):
+    reason: str = Field(default="", max_length=200)
+
+
 def create_app(bot: Any = None) -> FastAPI:
     app = FastAPI(title="Fozoolyab Bale Mini App", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.bot = bot
@@ -204,6 +212,12 @@ def create_app(bot: Any = None) -> FastAPI:
     @app.get("/api/me")
     def me(user: dict = Depends(current_user)):
         uid = user["user_id"]
+        # v4.7: همگام‌سازی استریک/XP ورود روزانه — کاربری که فقط مینی‌اپ را باز می‌کند
+        # هم مثل پنل شیشه‌ای زنجیرهٔ روزانه‌اش ادامه می‌یابد (سپر VIP هم اعمال می‌شود).
+        try:
+            rewards.touch_daily(uid)
+        except Exception:
+            pass
         ch = channels.check(uid)
         rec = snoop.visitors(uid, size=3)["items"]
         vip_st = vip.status(uid)
@@ -306,6 +320,33 @@ def create_app(bot: Any = None) -> FastAPI:
     @app.post("/api/wheel/spin")
     def wheel_spin(user: dict = Depends(member_user)):
         return ok(wheel.spin(user["user_id"]))
+
+    # ---------- v4.7: ماموریت‌ها (همان ماموریت‌های پنل شیشه‌ای) ----------
+    @app.get("/api/missions")
+    def missions_page(page: int = Query(1, ge=1, le=1000), user: dict = Depends(member_user)):
+        return ok(missions.page(user["user_id"], page))
+
+    @app.get("/api/missions/{task_id}")
+    def missions_detail(task_id: str, user: dict = Depends(member_user)):
+        t = missions.detail(user["user_id"], task_id)
+        if not t:
+            raise AppError("NOT_FOUND", "ماموریت پیدا نشد.", 404)
+        return ok(t)
+
+    # ---------- v4.7: پاداش‌ها (جایزه روزانه + کد هدیه — هم‌ارز منوی 🎁 ربات) ----------
+    @app.get("/api/rewards")
+    def rewards_state(user: dict = Depends(member_user)):
+        uid = user["user_id"]
+        return ok({"daily": rewards.daily_state(uid), "gift_codes": rewards.gift_codes(uid),
+                   "wheel": {k: v for k, v in wheel.state(uid).items() if k != "segments"}})
+
+    @app.post("/api/rewards/claim")
+    def rewards_claim(user: dict = Depends(member_user)):
+        return ok(rewards.claim_daily(user["user_id"]))
+
+    @app.post("/api/gifts/redeem")
+    def gifts_redeem(body: RedeemIn, user: dict = Depends(member_user)):
+        return ok(rewards.redeem_gift(user["user_id"], body.code))
 
     # ---------- پشتیبانی ----------
     @app.get("/api/support/messages")
@@ -418,6 +459,17 @@ def create_app(bot: Any = None) -> FastAPI:
     @app.post("/api/admin/users/{user_id}/ban")
     def a_ban(user_id: int, body: BanIn, me_: dict = Depends(admin_user)):
         return ok(admin_svc.set_ban(me_["user_id"], user_id, body.banned))
+
+    # v4.7: اخطار به کاربر + بازنشانی اخطارها (هم‌ارز پنل شیشه‌ای)
+    @app.post("/api/admin/users/{user_id}/warn")
+    def a_warn(user_id: int, body: WarnIn, me_: dict = Depends(admin_user)):
+        if user_id == me_["user_id"]:
+            raise AppError("VALIDATION_ERROR", "نمی‌توانید به خودتان اخطار بدهید.", 422)
+        return ok(admin_svc.warn_user(user_id, body.reason or "اخطار از طرف مدیر"))
+
+    @app.post("/api/admin/users/{user_id}/reset-warnings")
+    def a_reset_warns(user_id: int, _: dict = Depends(admin_user)):
+        return ok(admin_svc.reset_warnings(user_id))
 
     @app.post("/api/admin/users/{user_id}/message")
     def a_msg(user_id: int, body: TextIn, _: dict = Depends(admin_user)):

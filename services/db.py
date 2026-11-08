@@ -241,6 +241,39 @@ SCHEMA = [
         used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (code, user_id)
     )""",
+    # --- v4.7: جدول‌های هستهٔ ربات که سرویس‌های ماموریت/پاداش/کانال می‌خوانند ---
+    # (در production ربات هم همین‌ها را می‌سازد و CREATE IF NOT EXISTS جمع می‌شود)
+    """CREATE TABLE IF NOT EXISTS muted_snoops (
+        owner_id INTEGER NOT NULL,
+        clicker_id INTEGER NOT NULL,
+        muted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (owner_id, clicker_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS xp_bonuses (
+        user_id INTEGER NOT NULL,
+        bonus_type TEXT NOT NULL,
+        awarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, bonus_type)
+    )""",
+    """CREATE TABLE IF NOT EXISTS reveals (
+        owner_id INTEGER NOT NULL,
+        clicker_id INTEGER NOT NULL,
+        revealed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (owner_id, clicker_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS channel_joins (
+        user_id INTEGER NOT NULL,
+        channel_username TEXT NOT NULL,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, channel_username)
+    )""",
+    """CREATE TABLE IF NOT EXISTS daily_bonus (
+        user_id INTEGER PRIMARY KEY,
+        last_claim TEXT,
+        streak INTEGER DEFAULT 0,
+        total_claims INTEGER DEFAULT 0
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_db_last_claim ON daily_bonus(last_claim)",
     # --- v4.4: تصمیم «حفظ آبرو / لو رفتن» بازدیدکنندهٔ تله (مشترک با ربات) ---
     """CREATE TABLE IF NOT EXISTS trap_decisions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -279,6 +312,13 @@ USER_COLUMNS = {
     "hide_leaderboard": "INTEGER DEFAULT 0",
     "streak_count": "INTEGER DEFAULT 0",
     "last_streak_date": "TEXT",
+    # v4.7: ستون‌های ربات که سرویس‌های ماموریت/پاداش/اخطار می‌خوانند
+    "warning_count": "INTEGER DEFAULT 0",
+    "welcome_text": "TEXT",
+    "welcome_photo": "TEXT",
+    "last_wheel_date": "TEXT",
+    "last_giftvip_date": "TEXT",
+    "trial_given": "INTEGER DEFAULT 0",
 }
 
 

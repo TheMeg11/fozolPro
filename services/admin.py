@@ -118,7 +118,9 @@ def user_detail(user_id: int) -> dict:
     return {
         "user": {"id": u["user_id"], "name": display_name(u), "username": u.get("username"), "joined_at": u.get("joined_at"), "last_seen": u.get("last_seen"), "avatar": avatars.url_for(user_id)},
         "banned": bool(u.get("is_banned")), "vip": vip.status(user_id), "xp": users.level_info(u.get("xp") or 0),
-        "stats": {"snoops": db.scalar("SELECT COUNT(*) FROM clicks WHERE owner_id=?", (user_id,)),
+        # v4.7: تعداد اخطارها — همان پروندهٔ کاربر پنل شیشه‌ای
+        "warnings": int(db.scalar("SELECT COALESCE(warning_count,0) FROM users WHERE user_id=?", (user_id,), 0)),
+        "stats": {"snoops": db.scalar("SELECT COUNT(DISTINCT clicker_id) FROM clicks WHERE owner_id=?", (user_id,)),
                   "traps": db.scalar("SELECT COUNT(*) FROM traps WHERE owner_id=?", (user_id,)),
                   "spins": db.scalar("SELECT COUNT(*) FROM wheel_spins WHERE user_id=?", (user_id,))},
         "payments": vip.payments_of(user_id),
@@ -159,6 +161,50 @@ def direct_message(user_id: int, text: str) -> dict:
     users.get(user_id)
     bale_api.send_message(user_id, text)
     return {"sent": True}
+
+
+# ---------------- v4.7: اخطار به کاربر (هم‌ارز دکمهٔ پنل شیشه‌ای) ----------------
+WARN_BAN_THRESHOLD = 3  # مثل ربات: اخطار سوم = مسدودیت خودکار
+
+
+def warn_user(user_id: int, reason: str = "اخطار از طرف مدیر") -> dict:
+    """افزایش شمارندهٔ اخطار + پیام به کاربر + مسدودیت خودکار در اخطار سوم.
+    همان جریان admin_review_ ربات (increment_warning → WARNING_MESSAGE/BAN_MESSAGE)."""
+    users.get(user_id)
+    reason = (reason or "").strip() or "اخطار از طرف مدیر"
+    with db.tx() as c:
+        c.execute("UPDATE users SET warning_count = COALESCE(warning_count, 0) + 1 WHERE user_id=?", (user_id,))
+        current = int(c.execute("SELECT COALESCE(warning_count,0) FROM users WHERE user_id=?",
+                                (user_id,)).fetchone()[0] or 0)
+    if current >= WARN_BAN_THRESHOLD:
+        users.set_banned(user_id, True)
+        try:
+            bale_api.send_message(user_id,
+                                  "⛔ *اخطار ۳ از ۳ – حساب شما مسدود شد*\n\n"
+                                  "به دلیل دریافت سه اخطار پیاپی، دسترسی شما به تمام قابلیت‌های ربات برای همیشه مسدود گردید.\n\n"
+                                  "🪦 *مدیریت فضول‌یاب*")
+        except AppError:
+            pass
+        return {**user_detail(user_id), "warn": {"count": current, "banned": True}}
+    try:
+        bale_api.send_message(user_id,
+                              f"⚠️ *اخطار {current} از 3 از طرف مدیر ربات فضول‌یاب*\n\n"
+                              f"گزارشی مبنی بر *{reason}* از سمت شما دریافت شده است.\n"
+                              "طبق قوانین ربات، این نوع رفتار قابل قبول نیست.\n\n"
+                              "❌ در صورت تکرار، دسترسی شما به تمام قابلیت‌های ربات *برای همیشه مسدود* خواهد شد.\n\n"
+                              "👮 لطفاً قوانین رو رعایت کن.\n"
+                              "🕷️ *مدیریت فضول‌یاب*")
+    except AppError:
+        pass
+    return {**user_detail(user_id), "warn": {"count": current, "banned": False}}
+
+
+def reset_warnings(user_id: int) -> dict:
+    """بازنشانی اخطارها (همان دکمهٔ ربات) + رفع مسدودیت ناشی از اخطار."""
+    users.get(user_id)
+    with db.tx() as c:
+        c.execute("UPDATE users SET warning_count = 0 WHERE user_id=?", (user_id,))
+    return user_detail(user_id)
 
 
 # ---------------- پخش همگانی ----------------
@@ -458,6 +504,13 @@ def forced_channels() -> dict:
 
 
 def add_forced_channel(channel_id: str, title: str, target: int = 0) -> dict:
+    """v4.7: افزودن کانال اجباری با همان جریان پنل شیشه‌ای ربات:
+    ۱) getChat برای گرفتن شناسهٔ عددی + عنوان + لینک دعوت؛
+    ۲) تأیید اینکه ربات در کانال **ادمین** است (وگرنه چک عضویت ممکن نیست)؛
+    ۳) ذخیرهٔ همان فرمت ربات (شناسهٔ عددی -100… + invite_link).
+    قبلاً متن خام بدون @ و بدون لینک ذخیره می‌شد و چک عضویت همیشه خطا می‌داد."""
+    from services import channels as channels_svc
+
     channel_id = (channel_id or "").strip()
     title = (title or "").strip()
     if not channel_id:
@@ -469,16 +522,70 @@ def add_forced_channel(channel_id: str, title: str, target: int = 0) -> dict:
     target = max(0, int(target or 0))
     if db.row("SELECT 1 FROM forced_channels WHERE channel_id=?", (channel_id,)):
         raise AppError("VALIDATION_ERROR", "این کانال قبلاً اضافه شده است.", 422)
+
+    # ۱) اطلاعات کانال از API بله (مثل fetch_channel_info ربات)
+    probe = channel_id if channel_id.startswith("-") else ("@" + channel_id)
+    try:
+        chat = bale_api.get_chat(probe) or {}
+    except AppError as exc:
+        raise AppError("VALIDATION_ERROR",
+                       "اطلاعات کانال دریافت نشد. مطمئن شوید ربات عضو کانال است و شناسه (@username یا عددی) درست است.",
+                       422, {"details": str((exc.details or {}).get("description", ""))[:120]}) from None
+    api_id = str(chat.get("id") or channel_id)
+    ch_title = title or chat.get("title") or channel_id
+    invite_link = str(chat.get("invite_link") or "").strip()
+    if not invite_link:
+        uname = str(chat.get("username") or "").strip().lstrip("@")
+        if uname:
+            invite_link = settings.BALE_DEEPLINK_BASE + uname
+
+    # ۲) ربات باید ادمین کانال باشد تا بتواند عضویت را بررسی کند
+    try:
+        me = bale_api.get_me() or {}
+        bot_id = me.get("id")
+        member = (bale_api.get_chat_member(api_id, bot_id) or {}) if bot_id else {}
+        if member.get("status") not in ("administrator", "creator"):
+            raise AppError("VALIDATION_ERROR",
+                           "ربات باید در کانال «ادمین» باشد تا عضویت کاربران را بررسی کند. "
+                           "ربات را ادمین کنید و دوباره امتحان کنید.", 422)
+    except AppError as exc:
+        if exc.code == "VALIDATION_ERROR":
+            raise
+        raise AppError("VALIDATION_ERROR",
+                       "نمی‌توان وضعیت ربات در کانال را بررسی کرد. مطمئن شوید ربات عضو کانال است.", 422) from None
+
+    # ۳) ذخیره — همان فرمت ربات (شناسهٔ عددی + invite_link واقعی)
     db.execute("INSERT INTO forced_channels (channel_id, channel_name, invite_link, target, added_at) VALUES(?,?,?,?,?)",
-               (channel_id, title or channel_id, "", target, iso()))
-    log.info("forced channel added from miniapp: %s (target=%s)", channel_id, target)
+               (api_id, ch_title, invite_link, target, iso()))
+    channels_svc.invalidate_cache()
+    channels_svc._info.clear()
+    # هم‌گام‌سازی زندهٔ لیست CHANNELS ربات (بدون ری‌استارت)
+    _sync_bot_channels_reload()
+    log.info("forced channel added from miniapp: %s (%s) target=%s", api_id, ch_title, target)
     return forced_channels()
 
 
 def remove_forced_channel(channel_id: str) -> dict:
+    from services import channels as channels_svc
+
     db.execute("DELETE FROM forced_channels WHERE channel_id=?", ((channel_id or "").strip(),))
+    channels_svc.invalidate_cache()
+    channels_svc._info.clear()
+    _sync_bot_channels_reload()
     log.info("forced channel removed from miniapp: %s", channel_id)
     return forced_channels()
+
+
+def _sync_bot_channels_reload() -> None:
+    """بارگذاری مجدد لیست CHANNELS رباتِ در حال اجرا — کانال‌های اضافه‌شده از
+    مینی‌اپ بدون ری‌استارت در اد اجباری ربات هم فعال شوند."""
+    try:
+        import main as legacy_main
+        reload_fn = getattr(legacy_main, "load_channels_from_db", None)
+        if callable(reload_fn):
+            reload_fn()
+    except Exception:
+        pass  # ربات در این پروسس لود نشده (حالت API-only)
 
 
 # ---------------- v4.3: حالت تبلیغ (پیام همگانی با دکمه‌های لینک تبلیغ) ----------------
