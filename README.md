@@ -104,13 +104,17 @@ fozol-pro/
 |---|---|---|
 | `BOT_TOKEN` | ✅ | توکن ربات بله |
 | `ADMIN_ID` | ✅ | شناسه عددی سوپر ادمین (مثلاً `123456789`) |
-| `DB_PATH` | ✅ | `/data/bot_data.db` (روی Volume) |
+| `DB_PATH` | ✅ | `/data/bot_data.db` — «مسیر کامل فایل»؛ مقدار `/data` (فقط پوشه) غلط است |
 | `WEBAPP_URL` | ➖ | `https://<دامنهٔ سرویس>` — خالی = خودکار از `RAILWAY_PUBLIC_DOMAIN` |
 | `PROVIDER_TOKEN` | ➖ | توکن درگاه (`WALLET-...`) — خالی = خرید غیرفعال |
 | `MINIAPP_DEMO` | ➖ | پیش‌فرض `off` |
 
 ### Volume
 سرویس ← Settings ← Volumes ← Mount Path = **`/data`**
+
+> **خطای رایج:** اگر در لاگ استارتاپ `sqlite3.OperationalError: unable to open database file` دیدید، یعنی `DB_PATH` به پوشه (مثل `/data`) اشاره کرده یا Volume درست mount نشده.
+> از v5.0.1 ربات این حالت را خودکار اصلاح می‌کند و در لاگ خطِ `db: path=... | dir=... | volume=...` نشان می‌دهد دیتابیس کجاست؛
+> اگر `volume=False` بود یعنی داده‌ها روی فایل‌سیستم موقت کانتینرند — Mount Path و `DB_PATH` را طبق جدول بالا تنظیم و Redeploy کنید.
 
 ## 📲 ثبت مینی‌اپ در BotFather بله (بعد از دیپلوی)
 
@@ -121,6 +125,7 @@ fozol-pro/
 ## 🩺 تأیید سلامت
 
 - لاگ باید `🚀 ربات @... راه‌اندازی شد (fozol-pro)` و `listening on 0.0.0.0:8080` را نشان دهد.
+- خطِ `db: path=/data/bot_data.db | dir=/data | volume=True` در ابتدای لاگ یعنی دیتابیس سالم روی Volume است.
 - `GET /health` → `{"ok":true,"db":true,"bot":true}`
 - در بله `/start` بدهید ← دکمهٔ «📱 باز کردن مینی‌اپ» ← ورود بدون خطا.
 

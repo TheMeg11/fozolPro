@@ -13,6 +13,7 @@ import os
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any, Iterator
 
 import settings
@@ -23,6 +24,141 @@ _write_lock = threading.RLock()
 _all_conns: list[sqlite3.Connection] = []
 _all_lock = threading.Lock()
 _generation = 0  # v4.6.2: با هر close_all زیاد می‌شود تا کانکشن‌های thread-local باطل شوند (بعد از /restore)
+
+# ----------------------------------------------------------------------------
+# v5.0.1: تعیین امن مسیر دیتابیس — رفع crash-loop «unable to open database file»
+# روی Railway اگر DB_PATH به «پوشه» (مثلاً /data) اشاره کند یا Volume قابل‌نوشتن
+# نباشد، قبلاً استارتاپ با کرش‌لوپ متوقف می‌شد. حالا مسیر یک‌بار نرمال/پروب می‌شود:
+#  - DB_PATH=/data یا /data/ → خودکار به /data/bot_data.db اصلاح می‌شود
+#  - اگر فایلِ موجود باز نشود → خطای شفاف با چک‌لیست (فال‌بک ممنوع تا داده نپرد)
+#  - اگر فایلی نیست و مسیر اصلی غیرقابل‌نوشتن است → فال‌بک به مسیر قابل‌نوشتن + هشدار بلند
+# ----------------------------------------------------------------------------
+_resolved_path: str | None = None
+_resolve_lock = threading.Lock()
+_DB_FILENAME = "bot_data.db"
+
+_RAILWAY_CHECKLIST = (
+    "چک‌لیست Railway:\n"
+    "  1) Variables ← DB_PATH باید مسیر کامل «فایل» باشد: /data/bot_data.db (نه /data و نه /data/)\n"
+    "  2) Settings ← Volumes ← Mount Path باید /data باشد\n"
+    "  3) اگر Volume را تازه وصل/تغییر داده‌اید، یک‌بار Redeploy کنید"
+)
+
+
+def _sanitize_path(raw: str) -> str:
+    """نرمال‌سازی مسیر DB — رایج‌ترین خطای پیکربندی Railway را خودکار اصلاح می‌کند."""
+    p = (raw or "").strip().strip('"').strip("'").strip()
+    if not p:
+        p = f"/data/{_DB_FILENAME}"
+    p = os.path.expanduser(p)
+    if p.endswith("/"):
+        p += _DB_FILENAME
+    try:
+        is_dir = os.path.isdir(p)
+    except OSError:
+        is_dir = False
+    # DB_PATH=/data (Mount Path) یا هر مسیرِ «پوشه‌مانند» → فایل دیتابیس داخل همان پوشه
+    if is_dir or "." not in os.path.basename(p):
+        p = os.path.join(p, _DB_FILENAME)
+    return p
+
+
+def _probe_path(path: str) -> str | None:
+    """None = مسیر سالم و قابل استفاده؛ در غیر این صورت دلیلِ مشکل (برای لاگ/خطا)."""
+    directory = os.path.dirname(path) or "."
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        return f"ساخت پوشهٔ {directory} ممکن نیست: {exc}"
+    if os.path.isdir(path):
+        return f"مسیر {path} یک پوشه است، نه فایل — DB_PATH باید مسیر کامل «فایل» باشد"
+    try:
+        c = sqlite3.connect(path, timeout=10)
+        try:
+            c.execute("PRAGMA journal_mode=WAL")  # همان چیزی که _open واقعاً لازم دارد
+        finally:
+            c.close()
+    except sqlite3.Error as exc:
+        return f"sqlite نمی‌تواند {path} را باز کند: {exc}"
+    return None
+
+
+def _is_mountpoint(directory: str) -> bool:
+    """آیا این پوشه نقطهٔ اتصال Volume است؟ (تشخیصی، از /proc/mounts)"""
+    try:
+        with open("/proc/mounts", encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) > 1 and parts[1].replace("\\040", " ") == directory:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _resolve() -> str:
+    """مسیر نهایی DB را فقط یک‌بار تعیین و همه‌جا هم‌سو می‌کند (thread-safe).
+
+    main.py مسیر را مستقیم از os.environ می‌خواند؛ بنابراین تصمیم نهایی علاوه بر
+    settings.DB_PATH در env هم نوشته می‌شود تا هر دو مسیر (ربات و مینی‌اپ) یکی بمانند.
+    """
+    global _resolved_path
+    if _resolved_path:
+        return _resolved_path
+    with _resolve_lock:
+        if _resolved_path:
+            return _resolved_path
+        target = _sanitize_path(settings.DB_PATH)
+        reason = _probe_path(target)
+        if reason is None:
+            _resolved_path = target
+        elif os.path.exists(target) and not os.path.isdir(target):
+            # فایلِ دیتابیسِ موجود باز نمی‌شود — فال‌بک یعنی رهاکردن داده‌های واقعی کاربران؛ ممنوع.
+            raise RuntimeError(
+                f"دیتابیس در {target} موجود است ولی باز نمی‌شود:\n  {reason}\n"
+                f"{_RAILWAY_CHECKLIST}\n"
+                "تا رفع این مشکل ربات عمداً بالا نمی‌آید تا داده‌ها از دست نرود."
+            )
+        else:
+            log.error("db: مسیر اصلی قابل استفاده نیست → %s", reason)
+            candidates = (
+                os.path.join(str(settings.BASE_DIR), "data", _DB_FILENAME),
+                os.path.join("/tmp", "fozol-data", _DB_FILENAME),
+            )
+            for fb in candidates:
+                why = _probe_path(fb)
+                if why is None:
+                    log.error(
+                        "db: FALLBACK — دیتابیس به %s منتقل شد (ذخیره‌سازی موقت؛ با Redeploy از بین می‌رود!).",
+                        fb,
+                    )
+                    log.error("db: %s", _RAILWAY_CHECKLIST.replace("\n", " | "))
+                    _resolved_path = fb
+                    try:  # کش آواتار هم کنار دیتابیس بیفتد تا هر درخواست خطا نخورد
+                        settings.AVATAR_DIR = Path(os.path.dirname(fb)) / "avatars"
+                    except Exception:
+                        pass
+                    break
+                log.error("db: مسیر جایگزین %s هم ممکن نیست → %s", fb, why)
+            if not _resolved_path:
+                raise RuntimeError(
+                    f"هیچ مسیر قابل‌نوشتنی برای دیتابیس پیدا نشد (اصلی: {target} → {reason}).\n{_RAILWAY_CHECKLIST}"
+                )
+        # هم‌سویی مصرف‌کننده‌ها: services/* از settings.DB_PATH و main.py مستقیم از os.environ می‌خواند
+        settings.DB_PATH = _resolved_path
+        os.environ["DB_PATH"] = _resolved_path
+        directory = os.path.dirname(_resolved_path) or "."
+        on_volume = _is_mountpoint(directory)
+        log.info(
+            "db: path=%s | dir=%s | volume=%s | exists=%s",
+            _resolved_path, directory, on_volume, os.path.exists(_resolved_path),
+        )
+        if not on_volume:
+            log.warning(
+                "db: مسیر دیتابیس روی فایل‌سیستم کانتینر است، نه Volume — با هر Redeploy داده‌ها پاک می‌شود! "
+                "(در Railway: Volumes ← Mount Path=/data و DB_PATH=/data/bot_data.db)"
+            )
+        return _resolved_path
 
 
 def _open(path: str) -> sqlite3.Connection:
@@ -41,7 +177,7 @@ def _open(path: str) -> sqlite3.Connection:
 
 
 def conn() -> sqlite3.Connection:
-    path = settings.DB_PATH
+    path = _resolved_path or _resolve()
     c = getattr(_local, "conn", None)
     # v4.6.2: چک _generation — اگر close_all() (مثلاً بعد از /restore) اجرا شده باشد،
     # کانکشن‌های thread-localِ بقیهٔ ترد‌ها به فایل قدیمی/بسته اشاره می‌کنند و باید باز شوند.

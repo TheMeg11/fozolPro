@@ -23,7 +23,7 @@ def _env(name, default=""):
 
 # ====== شماره نسخه ربات ======
 # در بنر استارت و لاگ‌ها نمایش داده می‌شود (برای ردیابی نسخهٔ دیپلوی‌شده روی Railway)
-BOT_VERSION = "5.0.0"  # fozol-pro v5.0: رفع محدودیت تعاملی بله — bot_sender (گیت سراسری + 429) + ویزارد تک‌پیامی
+BOT_VERSION = "5.0.1"  # fozol-pro v5.0.1: خودترمیمی مسیر DB در Railway — رفع کرش‌لوپ unable to open database file
 
 # ====== اطلاعات حساس — از Environment Variables ======
 BOT_TOKEN = _env("BOT_TOKEN")                # توکن ربات
@@ -37,8 +37,10 @@ except ValueError:
     ADMIN_ID = 0
 
 # ====== مسیر فایل دیتابیس ======
-# روی Railway باید به یک Volume دائمی اشاره کند (مثلاً /data/bot_data.db)
-# تا با هر deploy جدید، دیتابیس از بین نرود.
+# روی Railway باید به یک Volume دائمی اشاره کند تا با هر deploy جدید، دیتابیس از بین نرود.
+# ⚠️ مقدار باید «مسیر کامل فایل» باشد: DB_PATH=/data/bot_data.db
+#    DB_PATH=/data (فقط پوشه) غلط است و خطای «unable to open database file» می‌دهد
+#    (v5.0.1 این خطا را خودکار اصلاح می‌کند، ولی مقدار را درست ست کنید).
 DB_PATH = _env("DB_PATH")
 
 # ====== قیمت‌های VIP (به ریال) — v3.22: موتور قیمت‌گذاری خودکار ======
