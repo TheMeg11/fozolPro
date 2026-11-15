@@ -66,6 +66,9 @@ FORCE_JOIN_ENABLED: bool = _get("FORCE_JOIN_ENABLED", "1").strip().lower() not i
 MINIAPP_DEMO: str = _get("MINIAPP_DEMO", "off")         # auto|on|off — در production خاموش
 RATE_LIMIT_PER_MIN: int = _int("RATE_LIMIT_PER_MIN", 120)
 WEBAPP_DIR: Path = Path(_get("WEBAPP_DIR", str(BASE_DIR / "webapp")))
+# v5.0: تعداد worker های پردازش وب‌هوک (صف داخلی) — ۲ تا ۴ نخ؛
+# بیش از این، پردازش موازی خودش باعث burst ارسال می‌شود (گیت سراسری bot_sender نرخ را می‌بندد).
+WEBHOOK_WORKERS: int = min(4, max(2, _int("WEBHOOK_WORKERS", 4)))
 # کش عکس‌های پروفایل (پروکسی آواتار) — روی Volume تا مصرف پهنای‌باند حداقل شود
 AVATAR_DIR: Path = Path(_get("AVATAR_DIR", "/data/avatars"))
 CSP: str = _get(
@@ -75,7 +78,8 @@ CSP: str = _get(
     "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'",
 )
 SUPPORT_NOTIFY_ADMIN: bool = _get("SUPPORT_NOTIFY_ADMIN", "1") == "1"
-BROADCAST_DELAY_SEC: float = float(_get("BROADCAST_DELAY_SEC", "0.06"))
+# v5.0: فاصلهٔ بین پیام‌های پخش مینی‌اپ — ۰.۰۶→۰.۳۵ ثانیه (~۲.۸/ثانیه، زیر نرخ پایهٔ بله)
+BROADCAST_DELAY_SEC: float = float(_get("BROADCAST_DELAY_SEC", "0.35"))
 XP_PER_SNOOP: int = _int("XP_PER_SNOOP", 5)
 FREE_MAX_TRAPS: int = _int("FREE_MAX_TRAPS", 1)
 VIP_MAX_TRAPS: int = _int("VIP_MAX_TRAPS", 10)

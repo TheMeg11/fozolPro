@@ -16,6 +16,7 @@ except ImportError:
 import texts
 import tasks as tasks_module
 import config
+import bot_sender  # v5.0: ماژول ارسال متمرکز — گیت سراسری + مدیریت 429 + آمار برای همهٔ ارسال‌ها
 from telebot.apihelper import ApiTelegramException
 
 # ====== v3.9: ماژول لیدربورد تصویری (Pillow) — در نبودش، حالت متنی ======
@@ -140,7 +141,9 @@ try:
 except Exception:
     pass
 bot = telebot.TeleBot(TOKEN, parse_mode="Markdown",
-                      num_threads=int(os.environ.get("BOT_WORKER_THREADS", "8")))
+                      num_threads=int(os.environ.get("BOT_WORKER_THREADS", "4")))
+# v5.0: پیش‌فرض نخ‌های هندلر ۸→۴ — پردازش موازی کمتر = burst ارسال کمتر
+# (گیت سراسری bot_sender نرخ واقعی را کنترل می‌کند؛ این فقط هم‌زمانی هندلرهاست)
 bot_info = bot.get_me()
 BOT_USERNAME = bot_info.username
 
@@ -209,7 +212,10 @@ def _bale_post_body(token, method_name, params):
 
 def _bale_make_request(token, method_url, params=None, method='post', files=None, **kw):
     """Patch برای سازگاری با Bale: reply_parameters → reply_to_message_id در همه درخواست‌ها.
-    v3.24.0: payload های بزرگ (URI بلند) به‌جای Query String با فرم‌بادی ارسال می‌شوند."""
+    v3.24.0: payload های بزرگ (URI بلند) به‌جای Query String با فرم‌بادی ارسال می‌شوند.
+    v5.0: کل dispatch از bot_sender.gated می‌گذرد — گیت سراسری نرخ (زیر سقف ۳/ثانیهٔ بله)،
+    فاصلهٔ هر چت، مدیریت 429 با retry_after و آمار؛ برای «همهٔ» نمونه‌های TeleBot این پروسه.
+    (این تابع فقط در همین ماژول به apihelper وصل می‌شود؛ broadcast_bot و بک‌گراندها هم از همین مسیر می‌روند.)"""
     if params and 'reply_parameters' in params:
         try:
             rp = params['reply_parameters']
@@ -228,14 +234,18 @@ def _bale_make_request(token, method_url, params=None, method='post', files=None
         except Exception:
             # اگه پارس نشد، فقط حذفش کن تا Bale به مشکل نخوره
             params.pop('reply_parameters', None)
-    # v3.24.0: مسیر فرم‌بادی فقط برای POST بدون فایل و payload بزرگ
-    if params and method == 'post' and not files:
-        try:
-            if _bale_estimate_uri_len(params) >= _BALE_JSON_BODY_MIN:
-                return _bale_post_body(token, method_url, params)
-        except Exception:
-            pass  # هر مشکلی در تخمین/مسیر فرم‌بادی → رفتار عادی قبلی
-    return _original_make_request(token, method_url, params=params, method=method, files=files)
+
+    def _dispatch():
+        # v3.24.0: مسیر فرم‌بادی فقط برای POST بدون فایل و payload بزرگ
+        if params and method == 'post' and not files:
+            try:
+                if _bale_estimate_uri_len(params) >= _BALE_JSON_BODY_MIN:
+                    return _bale_post_body(token, method_url, params)
+            except Exception:
+                pass  # هر مشکلی در تخمین/مسیر فرم‌بادی → رفتار عادی قبلی
+        return _original_make_request(token, method_url, params=params, method=method, files=files)
+
+    return bot_sender.gated(_dispatch, method_url, params)
 apihelper._make_request = _bale_make_request
 
 # ====== v3.19: ادیت امن پیام پنل — رفع باگ «دکمه‌های زیر پیام عکس‌دار کار نمی‌کند» ======
@@ -1567,8 +1577,8 @@ def _send_broadcast_single(broadcast_bot, uid, from_chat_id, message_id,
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
-            # Rate limiting
-            _rate_limit_wait(max_per_second=25)
+            # v5.0: rate-limit قدیمی (۲۵/ثانیه) حذف شد — گیت سراسری bot_sender
+            # نرخ همهٔ ارسال‌ها را مرکزی و زیر سقف بله نگه می‌دارد.
 
             # استراتژی 1: پیام متنی با دکمه → one-shot send_message
             if is_text and text_content is not None and reply_markup is not None:
@@ -1598,8 +1608,7 @@ def _send_broadcast_single(broadcast_bot, uid, from_chat_id, message_id,
             # الصاق دکمه‌ها با editMessageReplyMarkup (فقط برای رسانه با دکمه)
             if reply_markup is not None and sent and hasattr(sent, 'message_id'):
                 try:
-                    # هر API call باید rate-limit شود (رسانه+دکمه = ۲ call در هر کاربر)
-                    _rate_limit_wait(max_per_second=25)
+                    # v5.0: ادیت‌ها از گیت سبک bot_sender می‌گذرند (پیام جدید نمی‌سازند)
                     broadcast_bot.edit_message_reply_markup(
                         chat_id=uid,
                         message_id=sent.message_id,
@@ -1845,8 +1854,9 @@ def _run_broadcast_async_impl(admin_chat_id, preview_msg, resume_state=None, mar
 
         return (result, uid)
 
-    # ارسال موازی با ThreadPoolExecutor
-    workers = min(BROADCAST_WORKERS, 16)  # cap at 16 workers
+    # v5.0: سقف نخ‌های پخش ۱۶→۴ — گیت سراسری نرخ واقعی را تعیین می‌کند؛
+    # نخ بیشتر فقط صف گیت را شلوغ می‌کند و burst می‌سازد.
+    workers = min(BROADCAST_WORKERS, 4)
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         # Submit all tasks
@@ -3463,25 +3473,27 @@ def _grant_first_entry_gift(user_id):
 
 
 def _start_new_user_wizard(chat_id, name, tone="warm"):
-    """شروع ویزارد کاربر جدید — مرحله ۱: پیام خوش‌آمد (گرم برای welcome/organic، تله‌ای برای referral)."""
+    """شروع ویزارد کاربر جدید — v5.0: یک پیام واحد (کپشن ادغام‌شده + دکمه‌ها).
+    قبلاً ۲ پیام پشت‌سرهم ارسال می‌شد (خوش‌آمد + ویدیوی آموزش)؛ حالا خوش‌آمد و
+    آموزش در کپشنِ همان ویدیو ادغام شده‌اند: پیام کمتر = تجربهٔ تمیزترِ روز اول،
+    نرخ تبدیل بهتر و فشار کمتر روی ظرفیت تعاملی بله.
+    اگر ویدیو در دسترس نبود، همان متن در یک پیام متنی ارسال می‌شود (باز هم ۱ پیام)."""
     trial_days = db.get_setting_int("trial_days", 3)
     try:
-        # مرحله ۱: پیام خوش‌آمد بسته به مسیر ورود
-        if tone == "scary":
-            bot.send_message(chat_id, texts.TRAP_WIZARD_INTRO.format(name=escape_md(name), days=to_persian_digits(trial_days)))
-        else:
-            bot.send_message(chat_id, texts.WIZARD_WELCOME.format(name=escape_md(name), days=to_persian_digits(trial_days)))
-        # مرحله ۲: ویدیو + متن + دکمه‌ها (بدون تأخیر)
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(types.InlineKeyboardButton("🔍 ساخت تله", callback_data="wizard_make_trap"))
         markup.add(types.InlineKeyboardButton("➡️ ادامه", callback_data="wizard_skip"))
+        if tone == "scary":
+            caption = texts.TRAP_WIZARD_MERGED.format(name=escape_md(name), days=to_persian_digits(trial_days))
+        else:
+            caption = texts.WIZARD_WELCOME_MERGED.format(name=escape_md(name), days=to_persian_digits(trial_days))
         if LINK_TUTORIAL_VIDEO_ID:
             try:
-                bot.send_video(chat_id, LINK_TUTORIAL_VIDEO_ID, caption=texts.WIZARD_TUTORIAL, reply_markup=markup)
-            except:
-                bot.send_message(chat_id, texts.WIZARD_TUTORIAL_NO_VIDEO, reply_markup=markup)
-        else:
-            bot.send_message(chat_id, texts.WIZARD_TUTORIAL_NO_VIDEO, reply_markup=markup)
+                bot.send_video(chat_id, LINK_TUTORIAL_VIDEO_ID, caption=caption, reply_markup=markup)
+                return
+            except Exception:
+                pass  # فالبک: همان متنِ ادغام‌شده در یک پیام متنی
+        bot.send_message(chat_id, caption, reply_markup=markup)
     except Exception as e:
         logger.error(f"Wizard error: {e}")
 
@@ -9757,7 +9769,7 @@ def weekly_report_loop():
                                 pass
                     except Exception:
                         pass
-                    time.sleep(0.05)
+                    time.sleep(0.4)  # v5.0: ۰.۰۵→۰.۴ ثانیه — زیر نرخ پایهٔ بله + گیت سراسری
                 db.set_setting("weekly_report_last_date", now_t.date().isoformat())
                 print("📊 گزارش هفتگی ارسال شد", flush=True)
                 continue
@@ -9842,7 +9854,7 @@ def streak_guard_loop():
                             db.set_streak_notified_date(uid)
                         except Exception:
                             pass
-                    time.sleep(0.05)
+                    time.sleep(0.4)  # v5.0: ۰.۰۵→۰.۴ ثانیه — زیر نرخ پایهٔ بله + گیت سراسری
                 db.set_setting("streak_guard_last_date", now_t.date().isoformat())
                 print(f"🔥 Streak-at-risk notices sent to {sent} users", flush=True)
             time.sleep(60)
@@ -10442,9 +10454,11 @@ if __name__ == "__main__":
         except ImportError:  # پایتون خیلی قدیمی
             from http.server import HTTPServer as _THServer
             from http.server import BaseHTTPRequestHandler
-        pool_workers = max(4, int(os.environ.get("WEBHOOK_WORKERS", "16")))
+        pool_workers = min(4, max(2, int(os.environ.get("WEBHOOK_WORKERS", "4"))))
+        # v5.0: پیش‌فرض ۱۶→۴ و سقف ۴ نخ — پردازش موازی آپدیت خودش باعث burst ارسال می‌شد؛
+        # صف داخلی همین استخر + گیت سراسری bot_sender نرخ را نرمال نگه می‌دارد.
         wh_pool = ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix="wh")
-        print(f"🧵 webhook worker pool: {pool_workers} threads", flush=True)
+        print(f"🧵 webhook worker pool: {pool_workers} threads (v5.0 gated)", flush=True)
 
         secret = os.environ.get("WEBHOOK_SECRET", "").strip()
         bot.remove_webhook()

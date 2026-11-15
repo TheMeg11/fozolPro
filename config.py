@@ -23,7 +23,7 @@ def _env(name, default=""):
 
 # ====== شماره نسخه ربات ======
 # در بنر استارت و لاگ‌ها نمایش داده می‌شود (برای ردیابی نسخهٔ دیپلوی‌شده روی Railway)
-BOT_VERSION = "4.7.0"  # fozol-pro v4.7: رفع ۱۰ باگ + ماژولارسازی (bot_db/bot_helpers/…) + ماموریت‌ها و پاداش‌ها در مینی‌اپ
+BOT_VERSION = "5.0.0"  # fozol-pro v5.0: رفع محدودیت تعاملی بله — bot_sender (گیت سراسری + 429) + ویزارد تک‌پیامی
 
 # ====== اطلاعات حساس — از Environment Variables ======
 BOT_TOKEN = _env("BOT_TOKEN")                # توکن ربات
@@ -124,7 +124,7 @@ WHEEL_GIF_FILE_IDS = {
 LINK_TUTORIAL_VIDEO_ID = _env("LINK_TUTORIAL_VIDEO_ID", "133609405:7788517008210599681:1:53d2db8a41de22362faca2bb3c433faa754d335b4e870ee990edd78f98b6dba9")
 
 # ====== تنظیمات پخش همگانی ======
-BROADCAST_WORKERS = 10         # تعداد thread موازی برای ارسال
+BROADCAST_WORKERS = 4          # v5.0: ۱۰→۴ — گیت سراسری bot_sender نرخ را تعیین می‌کند؛ نخ بیشتر فقط burst می‌سازد
 BROADCAST_BATCH_SIZE = 25      # تعداد پیام در هر batch
 BROADCAST_BATCH_DELAY = 0.4    # مکث بین batchها (ثانیه) — برای رعایت rate limit
 BROADCAST_TIMEOUT = 300        # مدت زمان حالت پخش همگانی (ثانیه)

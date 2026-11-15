@@ -13,6 +13,7 @@ import re
 import threading
 import time
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Query, Request
@@ -540,6 +541,11 @@ def create_app(bot: Any = None) -> FastAPI:
 
     # ---------- وب‌هوک بله (اختیاری) ----------
     if settings.WEBHOOK_URL and settings.WEBHOOK_SECRET:
+        # v5.0: به‌جای یک نخ مجزا برای هر آپدیت (burst ارسال زیر بار)،
+        # صف داخلی با ۲-۴ worker — هم‌زمانی کنترل‌شده + گیت سراسری bot_sender.
+        wh_pool = ThreadPoolExecutor(max_workers=settings.WEBHOOK_WORKERS,
+                                     thread_name_prefix="bale-wh")
+
         @app.post("/bale/webhook/{secret}")
         async def webhook(secret: str, request: Request):
             if not hmac.compare_digest(secret, settings.WEBHOOK_SECRET):
@@ -549,7 +555,11 @@ def create_app(bot: Any = None) -> FastAPI:
                 import telebot  # pyTelegramBotAPI (سازگار با Bot API بله)
 
                 update = telebot.types.Update.de_json(payload.decode("utf-8"))
-                threading.Thread(target=app.state.bot.process_new_updates, args=([update],), daemon=True).start()
+                try:
+                    wh_pool.submit(app.state.bot.process_new_updates, [update])
+                except Exception:
+                    # فالبک: اگر استخر مشکل خورد، نخ عادی
+                    threading.Thread(target=app.state.bot.process_new_updates, args=([update],), daemon=True).start()
             return {"ok": True}
 
     # ---------- آواتار (پروکسی عکس پروفایل با امضا؛ بدون هدر initData چون تگ <img> است) ----------

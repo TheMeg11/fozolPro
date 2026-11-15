@@ -32,7 +32,9 @@ def get_challenge_status():
     return db.get_setting("challenge_status", "") or ""
 
 def _broadcast_to_all_users(text, markup=None):
-    """ارسال پیام به همهٔ کاربران واجد شرایط (سازگار با 403)."""
+    """ارسال پیام به همهٔ کاربران واجد شرایط (سازگار با 403).
+    v5.0: وقفهٔ بین پیام‌ها ۰.۰۵→۰.۴ ثانیه — زیر نرخ پایهٔ بله (۳/ثانیه)؛
+    گیت سراسری bot_sender هم به‌صورت مرکزی نرخ را تضمین می‌کند."""
     sent = 0
     for uid in db.get_broadcast_targets():
         try:
@@ -46,7 +48,7 @@ def _broadcast_to_all_users(text, markup=None):
                     pass
         except Exception:
             pass
-        time.sleep(0.05)
+        time.sleep(0.4)
     return sent
 
 def _challenge_utcnow():

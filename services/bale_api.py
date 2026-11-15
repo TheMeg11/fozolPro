@@ -1,6 +1,8 @@
 """کلاینت حداقلی Bot API بله (فقط آدرس‌های پایهٔ بله از settings).
 
 API مینی‌اپ برای ارسال پیام/فاکتور/فایل از این ماژول استفاده می‌کند تا به نمونهٔ telebot وابسته نباشد.
+v5.0: همهٔ فراخوانی‌ها از bot_sender.gated می‌گذرند — همان گیت سراسری مسیر telebot:
+نرخ زیر سقف بله + مدیریت 429 با retry_after + آمار مرکزی.
 """
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ from typing import Any
 
 import requests
 
+import bot_sender  # v5.0: گیت سراسری ارسال + مدیریت 429
 import settings
 from services.common import AppError
 
@@ -30,15 +33,33 @@ def _url(method: str) -> str:
 def call(method: str, timeout: float = 20, files: dict | None = None, **params: Any) -> Any:
     if not settings.BOT_TOKEN:
         raise BaleApiError("BOT_NOT_CONFIGURED", "توکن ربات تنظیم نشده است.", 503)
+    payload = {k: v for k, v in params.items() if v is not None}
+    try:
+        # v5.0: گیت سراسری — پیام‌سازها زیر سقف بله، 429 با retry_after تلاش مجدد می‌شود
+        return bot_sender.gated(lambda: _raw_call(method, timeout, files, payload), method, payload)
+    except bot_sender.RateLimited:
+        # حتی پس از تلاش‌های مجدد sender محدود ماند — به خطای استاندارد سرویس تبدیل می‌شود
+        raise BaleApiError("BALE_RATE_LIMITED", "بله موقتاً محدود کرده است؛ کمی بعد دوباره تلاش کنید.", 503) from None
+
+
+def _raw_call(method: str, timeout: float, files: dict | None, payload: dict) -> Any:
+    """درخواست واقعی HTTP — بدون گیت (فقط از داخل call از طریق bot_sender.gated صدا زده می‌شود)."""
     try:
         if files:
-            resp = _session.post(_url(method), data={k: v for k, v in params.items() if v is not None}, files=files, timeout=timeout)
+            resp = _session.post(_url(method), data=payload, files=files, timeout=timeout)
         else:
-            resp = _session.post(_url(method), json={k: v for k, v in params.items() if v is not None}, timeout=timeout)
+            resp = _session.post(_url(method), json=payload, timeout=timeout)
         data = resp.json()
     except (requests.RequestException, ValueError) as exc:
         log.warning("bale api %s failed: %s", method, exc.__class__.__name__)
         raise BaleApiError("BALE_UNAVAILABLE", "ارتباط با سرور بله برقرار نشد.", 502) from None
+    if resp.status_code == 429 or (isinstance(data, dict) and data.get("error_code") == 429):
+        # به bot_sender واگذار می‌شود: خواندن retry_after، سردکردن گیت، تلاش مجدد
+        try:
+            ra = (data.get("parameters") or {}).get("retry_after")
+        except Exception:
+            ra = None
+        raise bot_sender.RateLimited(retry_after=ra, description=str(data.get("description", ""))[:120])
     if not data.get("ok"):
         desc = str(data.get("description", ""))[:200]
         log.warning("bale api %s error: %s", method, desc)
