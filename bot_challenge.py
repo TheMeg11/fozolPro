@@ -431,13 +431,20 @@ def _challenge_tick():
             print(f"🏆 چالش فضول‌گیر برتر: پایان یافت ({announce[:40]}...)", flush=True)
 
 def challenge_loop():
-    """حلقهٔ چالش — هر ۶۰ ثانیه یک پالس."""
+    """حلقهٔ چالش — هر ۶۰ ثانیه یک پالس.
+    v5.0.2: بریکر خطا — استثناهای پیاپی به‌جای چرخش با فاصلهٔ ثابتِ ۶۰ ثانیه
+    (که تا ابد لاگ‌اسپام می‌ساخت)، backoff خطی تا سقف ۱۵ دقیقه می‌گیرند.
+    اولین تیک موفق، فاصله را به حالت عادی برمی‌گرداند."""
+    _consecutive_errors = 0
     while True:
         try:
             _challenge_tick()
+            _consecutive_errors = 0
+            time.sleep(60)
         except Exception as e:
+            _consecutive_errors += 1
             logger.error(f"challenge loop error: {e}")
-        time.sleep(60)
+            time.sleep(min(60 * _consecutive_errors, 900))
 
 
 

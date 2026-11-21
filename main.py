@@ -166,6 +166,21 @@ _original_make_request = apihelper._make_request
 # بقیه درخواست‌ها عیناً مسیر قبلی را می‌روند (صفر ریسک رگرسیون).
 _BALE_JSON_BODY_MIN = 2500  # حد آستانه طول URI انکودشده (کاراکتر)
 
+# ── v5.0.2: Session مشترک برای مسیر فرم‌بادی — قبلاً هر ارسالِ payload بزرگ یک
+# Session/اتصال TLS تازه می‌ساخت؛ churn روزانهٔ ده‌ها هزار اتصال به fragmentation
+# allocator و رشد RSS در پروسهٔ طولانی‌عمر منجر می‌شد. Session مشترک = اتصال زندهٔ
+# نگه‌داشته‌شده + صفر handshake اضافه. ──
+_bale_post_session = None
+_bale_post_session_lock = threading.Lock()
+
+def _get_bale_post_session():
+    """Session مشترک thread-safe برای POSTهای فرم‌بادی بله (v5.0.2)."""
+    global _bale_post_session
+    with _bale_post_session_lock:
+        if _bale_post_session is None:
+            _bale_post_session = requests.Session()
+        return _bale_post_session
+
 def _bale_estimate_uri_len(params):
     """تخمین طول URI در حالت Query String — همان انکودی که requests انجام می‌دهد."""
     try:
@@ -201,7 +216,7 @@ def _bale_post_body(token, method_name, params):
         except Exception:
             pass
     body = _urlencode(p, doseq=True)
-    result = _rq.post(request_url, data=body.encode('utf-8'),
+    result = _get_bale_post_session().post(request_url, data=body.encode('utf-8'),
                       headers={'Content-Type': 'application/x-www-form-urlencoded'},
                       timeout=(connect_timeout, read_timeout),
                       proxies=getattr(apihelper, 'proxy', None))
@@ -1086,6 +1101,18 @@ def _swap_database_with_file(new_db_path):
             shutil.move(str(DB_PATH), str(tmp_old))
         shutil.move(str(new_db_path), str(DB_PATH))
         db = Database(str(DB_PATH))
+    # ── v5.0.2 (رفع باگ «challenge loop error: Cannot operate on a closed database»):
+    # ماژول‌های استخراج‌شده (bot_challenge / bot_backups / bot_wheel_media) ارجاع خودِ
+    # db را موقع import با _bind(globals()) گرفته بودند؛ بعد از تعویض نمونهٔ Database
+    # هنوز به کانکشنِ بستهٔ نمونهٔ قدیمی اشاره می‌کردند و تا ابد خطا می‌دادند.
+    # بازتزریق وابستگی‌ها با نمونهٔ جدید → همهٔ حلقه‌های پس‌زمینه سالم می‌مانند. ──
+    for _bound_mod in (_bot_backups, globals().get('_bot_wheel_media'), globals().get('_bot_challenge')):
+        if _bound_mod is None:
+            continue
+        try:
+            _bound_mod._bind(globals())
+        except Exception as _rebind_err:
+            logger.error("rebind after restore failed for %s: %s", getattr(_bound_mod, '__name__', '?'), _rebind_err)
     # ── v4.6.2 (رفع باگ «خطای داخلی سرور» و رتبهٔ غلط مینی‌اپ بعد از /restore):
     # لایهٔ دیتابیس مینی‌اپ (services.db) هنوز کانکشن‌های thread-local به فایل قدیمی
     # (rename شده) داشت و دیتابیس بازیابی‌شده ستون‌های نسخهٔ جدید (مثل last_name،
@@ -2198,11 +2225,16 @@ _pending_task_notifications = {}  # user_id -> list of task dicts
 _pending_task_lock = threading.Lock()
 
 def _append_pending_task_notifications(user_id, tasks_list):
-    """v3.6: فقط صف — اعلان فوری در _check_and_award_tasks_xp انجام می‌شود (یک پیام خلاصه)."""
+    """v3.6: فقط صف — اعلان فوری در _check_and_award_tasks_xp انجام می‌شود (یک پیام خلاصه).
+    v5.0.2: سقف ۵۰ نوتیفیکیشن معلق به‌ازای کاربر — اگر کاربری برنگردد، صفش
+    بی‌سقف رشد نمی‌کند (کاربران غیرفعال پس از تسویه، لیستشان کوتاه می‌ماند)."""
     with _pending_task_lock:
         if user_id not in _pending_task_notifications:
             _pending_task_notifications[user_id] = []
-        _pending_task_notifications[user_id].extend(tasks_list)
+        lst = _pending_task_notifications[user_id]
+        lst.extend(tasks_list)
+        if len(lst) > 50:
+            del lst[:len(lst) - 50]
 
 def _get_and_clear_pending_task_notifications(user_id):
     """گرفتن و پاک کردن نوتیفیکیشن‌های در انتظار کاربر."""
@@ -10128,6 +10160,15 @@ def periodic_cleanup():
     while True:
         time.sleep(300)
         now = time.time()
+        # v5.0.2: پاکسازی ورودی‌های منقضی کش عضویت — قبلاً ورودی‌های TTL‌گذشته فقط
+        # بازنویسی می‌شدند و برای کاربرانی که برنمی‌گشتند تا همیشه در حافظه می‌ماندند.
+        try:
+            with _subscription_cache_lock:
+                if _subscription_cache:
+                    for _k in [k for k, (_v, _ts) in _subscription_cache.items() if now - _ts >= SUBSCRIPTION_CACHE_TTL]:
+                        _subscription_cache.pop(_k, None)
+        except Exception:
+            pass
         # v4.7: بارگذاری مجدد کانال‌های اجباری از دیتابیس — کانال‌هایی که ادمین
         # از پنل مینی‌اپ اضافه/حذف کرده بدون ری‌استارت در اد اجباری ربات فعال شوند.
         try:

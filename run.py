@@ -15,6 +15,35 @@ import uvicorn
 import settings
 
 
+def start_memory_hygiene() -> None:
+    """v5.0.2: بهداشت حافظهٔ دوره‌ای — هر ساعت gc.collect() + malloc_trim(0).
+
+    پروسهٔ طولانی‌عمرِ ربات با رندر تصویر (Pillow/raqm) و ترافیک HTTPS، دچار رشد
+    تدریجی RSS ناشی از fragmentation در allocator می‌شود (صفحات آزاد‌شده به OS
+    برنمی‌گشتند؛ روند مشاهده‌شده: ~۱۶۰MB در روز). malloc_trim صفحات آزاد heap
+    را به سیستم‌عامل برمی‌گرداند — بدون توقف سرویس و بدون دست‌زدن به منطق برنامه."""
+    import ctypes
+    import gc
+    import time
+
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        _trim = libc.malloc_trim
+    except (OSError, AttributeError):
+        return
+
+    def _run() -> None:
+        while True:
+            time.sleep(3600)
+            try:
+                gc.collect()
+                _trim(0)
+            except Exception:
+                pass
+
+    threading.Thread(target=_run, name="memory-hygiene", daemon=True).start()
+
+
 def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     logging.getLogger("uvicorn.access").disabled = True
@@ -76,6 +105,7 @@ def main() -> None:
 
     db.migrate()
     admin.recover_jobs()
+    start_memory_hygiene()
     bot, legacy = load_bot()
 
     if bot is not None:

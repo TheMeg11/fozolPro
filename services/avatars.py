@@ -96,27 +96,32 @@ def _optimize(raw: bytes) -> bytes:
 
 
 def _cached(p: Path) -> bytes | None:
-    """خواندن از کش؛ فایل خالی = نشانگر «بدون عکس» → None."""
+    """خواندن از کش — فایل خالی = نشانگر معتبرِ «بدون عکس» (کش منفی).
+    v5.0.2 (رفع باگ): قبلاً برای فایل خالی None برمی‌گشت و get_avatar آن را
+    «کش‌میس» تفسیر می‌کرد → برای هر بازدید از صفحهٔ فضول‌یاب، برای کاربرانِ
+    بدون عکس یا بلاک‌کرده، دوباره getChat زده می‌شد (ده‌ها هزار خطای
+    «Forbidden: bot was blocked» + اتلاف پهنای‌باند + سریال‌شدن روی قفل).
+    حالا b"" (که falsy است ولی None نیست) به‌عنوان hit گزارش می‌شود."""
     try:
         if p.exists() and time.time() - p.stat().st_mtime < TTL_DAYS * 86400:
-            data = p.read_bytes()
-            return data or None
+            return p.read_bytes()  # ممکن است b"" باشد = کش منفی معتبر
     except OSError:
         pass
     return None
 
 
 def get_avatar(uid: int) -> bytes | None:
-    """بایت‌های JPEG از کش/شبکه. None = عکسی وجود ندارد (کلاینت به حرف اول نام برمی‌گردد)."""
+    """بایت‌های JPEG از کش/شبکه. None = عکسی وجود ندارد (کلاینت به حرف اول نام برمی‌گردد).
+    v5.0.2: کش منفی (فایل خالی) هم hit حساب می‌شود — بدون تماس با API بله."""
     uid = int(uid)
     p = _cache_path(uid)
     hit = _cached(p)
-    if hit is not None:
-        return hit
+    if hit is not None:  # b"" = «بدون عکس» کش‌شده — دیگر getChat تکراری نیست
+        return hit or None
     with _lock:
         hit = _cached(p)  # دوباره زیر قفل — شاید ترد دیگری همین حالا نوشته باشد
         if hit is not None:
-            return hit
+            return hit or None
         data = _download(uid)
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -126,3 +131,37 @@ def get_avatar(uid: int) -> bytes | None:
         except OSError as exc:
             log.warning("avatar cache write failed: %s", exc)
         return data
+
+
+# ── v5.0.2: هرس دوره‌ای کش دیسک — فایل‌های منقضی (TTL_DAYS) حذف می‌شوند تا
+# سهمیهٔ Volume (۵۰۰MB) پر نشود؛ قبلاً فایل‌های آواتار برای همیشه می‌ماندند. ──
+def _purge_expired() -> None:
+    try:
+        root = Path(settings.AVATAR_DIR)
+        if not root.is_dir():
+            return
+        cutoff = time.time() - TTL_DAYS * 86400
+        removed = 0
+        for f in root.glob("*.jpg"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    removed += 1
+            except OSError:
+                pass
+        if removed:
+            log.info("avatar cache purge: %d expired file(s) removed", removed)
+    except Exception:
+        pass
+
+
+def _purge_loop() -> None:
+    while True:
+        time.sleep(6 * 3600)
+        _purge_expired()
+
+
+try:
+    threading.Thread(target=_purge_loop, name="avatar-purge", daemon=True).start()
+except Exception:
+    pass
