@@ -68,6 +68,20 @@ def _vip_can_send(sender: int, receiver: int) -> bool:
 def _vip_reg(sender: int, receiver: int) -> None:
     with _rl_lock:
         _vip_rate[(sender, receiver)].append(time.time())
+        if len(_vip_rate) > 5000:  # هرس دوره‌ای (حافظهٔ سالم)
+            now_t = time.time()
+            for k in [k for k, q in _vip_rate.items() if not q or q[-1] < now_t - 120]:
+                _vip_rate.pop(k, None)
+
+
+def _prune_rate() -> None:
+    """v5.1: حذف کلیدهای قدیمی — این دیکشنری برای هر جفت کاربر ورودی می‌ساخت
+    و هرگز پاک نمی‌شد (منبع رشد آرام حافظه در پروسهٔ ۹۰۰۰ کاربره)."""
+    now_t = time.time()
+    with _rl_lock:
+        dead = [k for k, q in _vip_rate.items() if not q or q[-1] < now_t - 120]
+        for k in dead:
+            _vip_rate.pop(k, None)
 
 
 def _normal_can_send(sender: int) -> bool:
@@ -241,7 +255,13 @@ def send(me_id: int, token: str, text: str) -> dict:
         {"text": "🚫 بلاک", "callback_data": f"block_{me_id}"},
         {"text": "⚠️ گزارش تخلف", "callback_data": f"report_{me_id}"},
     ]]}
-    bale_api.send_message(partner, body, reply_markup=reply_markup)
+    try:
+        # level=high: پیام کاربرِ مینی‌اپ هرگز پشت لِین پخش همگانی نمی‌ماند
+        bale_api.send_message(partner, body, reply_markup=reply_markup)
+    except AppError as exc:
+        if exc.code == "BOT_BLOCKED":
+            raise AppError("BOT_BLOCKED", "این کاربر ربات را بلاک کرده است؛ پیام تحویل داده نشد.", 409) from None
+        raise
     if is_vip:
         _vip_reg(me_id, partner)
     ts = iso()
@@ -284,3 +304,10 @@ def admin_archive(page: int = 1, per: int = 20, q: str = "") -> dict:
         "last_24h": db.scalar("SELECT COUNT(*) FROM anon_logs WHERE julianday('now') - julianday(timestamp) <= 1", (), 0),
     }
     return {"items": items, "total": total, "page": page, "pages": max(1, -(-total // per)), "stats": stats}
+
+try:  # گارد حافظهٔ سراسری (در اجرای مستقل تست‌ها وجود ندارد)
+    import memguard as _memguard
+
+    _memguard.register_pruner(_prune_rate)
+except Exception:  # pragma: no cover
+    pass

@@ -6,10 +6,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TZ=Asia/Tehran \
-    PORT=8080
+    PORT=8080 \
+    MALLOC_ARENA_MAX=2 \
+    MALLOC_TRIM_THRESHOLD_=131072 \
+    MALLOC_MMAP_THRESHOLD_=131072
 
 WORKDIR /app
 
+# v5.1: MALLOC_* — مهار رشد RSS در پروسهٔ چندنخی (پلن ۵۱۲MB Railway) با
+# کاهش arena های glibc و بازگرداندن سریع‌تر صفحات آزاد به سیستم‌عامل.
 # libfribidi/libharfbuzz: رندر RTL لیدربورد تصویری (raqm)
 # tzdata: زمان‌بندی بکاپ شبانه به وقت تهران
 RUN apt-get update && apt-get install -y --no-install-recommends libfribidi0 libharfbuzz0b tzdata \

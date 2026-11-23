@@ -23,7 +23,7 @@ def _env(name, default=""):
 
 # ====== شماره نسخه ربات ======
 # در بنر استارت و لاگ‌ها نمایش داده می‌شود (برای ردیابی نسخهٔ دیپلوی‌شده روی Railway)
-BOT_VERSION = "5.0.1"  # fozol-pro v5.0.1: خودترمیمی مسیر DB در Railway — رفع کرش‌لوپ unable to open database file
+BOT_VERSION = "5.1.0"  # fozol-pro v5.1.0: گیت ارسال اولویت‌دار + توقف سراسری ۴۲۹ + وبهوک آماده + گارد حافظه ۵۱۲MB
 
 # ====== اطلاعات حساس — از Environment Variables ======
 BOT_TOKEN = _env("BOT_TOKEN")                # توکن ربات

@@ -26,20 +26,28 @@ class BaleApiError(AppError):
     pass
 
 
+# v5.1: کاربری که ربات را بلاک کرده — ارسال دوباره بی‌فایده است و باید
+# یک‌بار علامت بخورد (blocked_bot=1) تا پخش/اعلان‌های بعدی دوباره سراغش نروند.
+_BLOCKED_HINTS = ("bot was blocked", "user is deactivated", "chat not found", "bot was kicked")
+
+
 def _url(method: str) -> str:
     return f"{settings.BALE_API_BASE}/bot{settings.BOT_TOKEN}/{method}"
 
 
-def call(method: str, timeout: float = 20, files: dict | None = None, **params: Any) -> Any:
+def call(method: str, timeout: float = 20, files: dict | None = None,
+         level: str | None = None, **params: Any) -> Any:
     if not settings.BOT_TOKEN:
         raise BaleApiError("BOT_NOT_CONFIGURED", "توکن ربات تنظیم نشده است.", 503)
     payload = {k: v for k, v in params.items() if v is not None}
     try:
         # v5.0: گیت سراسری — پیام‌سازها زیر سقف بله، 429 با retry_after تلاش مجدد می‌شود
-        return bot_sender.gated(lambda: _raw_call(method, timeout, files, payload), method, payload)
+        # v5.1: level=high برای پاسخ‌های تعاملی (مینی‌اپ) تا پشت پخش همگانی نمانند
+        return bot_sender.gated(lambda: _raw_call(method, timeout, files, payload), method, payload,
+                                level=level or bot_sender.HIGH)
     except bot_sender.RateLimited:
-        # حتی پس از تلاش‌های مجدد sender محدود ماند — به خطای استاندارد سرویس تبدیل می‌شود
-        raise BaleApiError("BALE_RATE_LIMITED", "بله موقتاً محدود کرده است؛ کمی بعد دوباره تلاش کنید.", 503) from None
+        # بودجهٔ انتظار تمام شد یا بله محدود کرده — خطای ۴۲۹ به کلاینت تا تلاش دوباره کند
+        raise BaleApiError("BALE_RATE_LIMITED", "بله موقتاً محدود کرده است؛ چند لحظه بعد دوباره تلاش کنید.", 429) from None
 
 
 def _raw_call(method: str, timeout: float, files: dict | None, payload: dict) -> Any:
@@ -62,6 +70,20 @@ def _raw_call(method: str, timeout: float, files: dict | None, payload: dict) ->
         raise bot_sender.RateLimited(retry_after=ra, description=str(data.get("description", ""))[:120])
     if not data.get("ok"):
         desc = str(data.get("description", ""))[:200]
+        low = desc.lower()
+        if any(h in low for h in _BLOCKED_HINTS):
+            # v5.1: ۴۰۳ تکرارشدنی نیست؛ کاربر را علامت بزن و سریع شکست بده
+            log.info("bale api %s: recipient unavailable (%s)", method, desc)
+            try:
+                from services import db as _db
+
+                chat = (payload or {}).get("chat_id")
+                if chat is not None:
+                    _db.execute("UPDATE users SET blocked_bot=1 WHERE user_id=?", (int(chat),))
+            except Exception:
+                pass
+            raise BaleApiError("BOT_BLOCKED", "این کاربر ربات را بلاک کرده است؛ پیام تحویل داده نشد.", 409,
+                               {"description": desc})
         log.warning("bale api %s error: %s", method, desc)
         raise BaleApiError("BALE_API_ERROR", "سرور بله درخواست را نپذیرفت.", 502, {"description": desc})
     return data.get("result")
@@ -83,8 +105,9 @@ def bot_username() -> str:
         return ""
 
 
-def send_message(chat_id: int, text: str, reply_markup: dict | None = None) -> Any:
-    return call("sendMessage", chat_id=chat_id, text=text[:4096], reply_markup=reply_markup)
+def send_message(chat_id: int, text: str, reply_markup: dict | None = None,
+                 level: str | None = None) -> Any:
+    return call("sendMessage", chat_id=chat_id, text=text[:4096], reply_markup=reply_markup, level=level)
 
 
 def send_invoice(chat_id: int, title: str, description: str, payload: str, amount_rial: int, label: str) -> Any:
