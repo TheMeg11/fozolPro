@@ -1,4 +1,4 @@
-# 🚀 fozol-pro — ربات فضول‌یاب + مینی‌اپ بله (نسخه ۴.۷)
+# 🚀 fozol-pro — ربات فضول‌یاب + مینی‌اپ بله (نسخه ۵.۱)
 
 ادغام کامل ربات [fozol-bot](https://github.com/TheMeg11/fozol-bot) با مینی‌اپ بله در **یک سرویس Railway و یک پروسس**:
 تمام امکانات ربات حفظ شده‌اند و مینی‌اپ روی همان دیتابیس کار می‌کند (یک دیتا، دو رابط).
@@ -20,6 +20,129 @@
 5. در اپ بله به `@BotFather` بروید و آدرس `https://<دامنه>/` را به‌عنوان مینی‌اپ ربات ثبت کنید.
 
 هر push جدید به `main` به‌صورت خودکار روی Railway redeploy می‌شود.
+
+## 📋 همهٔ متغیرها به‌صورت Raw (کپی مستقیم در Railway)
+
+در Railway: سرویس ← **Variables** ← دکمهٔ **Raw Editor** ← کل بلوک زیر را کپی/پیست کنید،
+بعد فقط سه مقدار اول را پر کنید (`BOT_TOKEN`، `ADMIN_ID`، و اگر وبهوک می‌خواهید `WEBHOOK_URL`/`WEBHOOK_SECRET`).
+بقیه همان پیش‌فرض‌های امنِ زیر سقف بله هستند و اگر لازم نبود می‌توانید خطشان را پاک کنید.
+
+```env
+# --- ضروری ---
+BOT_TOKEN=
+ADMIN_ID=
+DB_PATH=/data/bot_data.db
+
+# --- دامنه و مینی‌اپ ---
+WEBAPP_URL=
+PROVIDER_TOKEN=
+BOT_USERNAME=
+MINIAPP_DEMO=off
+REQUIRED_CHANNELS=
+FORCE_JOIN_ENABLED=1
+SUPPORT_NOTIFY_ADMIN=1
+RATE_LIMIT_PER_MIN=120
+INITDATA_MAX_AGE=86400
+AVATAR_DIR=/data/avatars
+
+# --- وبهوک (خالی = polling؛ برای فعال‌سازی هر دو را پر کنید) ---
+WEBHOOK_URL=
+WEBHOOK_SECRET=
+WEBHOOK_WORKERS=4
+
+# --- ارسال و محدودیت بله (v5.1) ---
+SEND_GATE_RATE_PER_SEC=2.0
+SEND_GATE_BURST=3
+SEND_BULK_RATE_PER_SEC=1.0
+SEND_GATE_EDIT_RATE_PER_SEC=4
+SEND_GATE_EDIT_BURST=4
+SEND_GATE_PER_CHAT_SEC=1.0
+SEND_INLINE_MAX_WAIT=10
+SEND_BULK_MAX_WAIT=600
+SEND_READ_MAX_WAIT=6
+SEND_429_MAX_RETRIES=4
+SEND_429_DEFAULT_WAIT=3
+SEND_429_MAX_PAUSE=120
+SEND_GATE_429_COOLDOWN=60
+SEND_GATE_429_FACTOR=0.75
+SEND_GATE_MIN_FACTOR=0.5
+SEND_GATE_RECOVERY_SEC=30
+SEND_GATE_RECOVERY_STEP=0.1
+SEND_STATS_LOG_SEC=300
+
+# --- نخ‌ها و پخش همگانی ---
+BOT_WORKER_THREADS=4
+BROADCAST_WORKERS=2
+BROADCAST_DELAY_SEC=0.35
+
+# --- گارد حافظه (پلن ۵۱۲MB) ---
+MEM_CHECK_SEC=120
+MEM_SOFT_MB=320
+MEM_HARD_MB=440
+MEM_TRACE=0
+
+# --- اقتصاد و بازی ---
+XP_PER_SNOOP=5
+FREE_MAX_TRAPS=1
+VIP_MAX_TRAPS=10
+TOMAN_TO_RIAL=10
+```
+
+> اگر Railway برای مقدارهای خالی خطا داد، خطوطی که مقدار ندارند (مثل `PROVIDER_TOKEN=`) را حذف کنید — همهٔ آن‌ها اختیاری‌اند.
+
+## 🔔 فعال‌سازی وبهوک بله (پیشنهادی برای ترافیک بالا)
+
+**وبهوک در مقابل polling چه می‌کند؟** در polling، ربات هر چند ثانیه از بله می‌پرسد «آپدیت جدید هست؟»
+و یک نخ دائمی + درخواست‌های تکراری مصرف می‌کند. در وبهوک، بله هر پیام را **فوراً** به آدرس HTTPS شما
+POST می‌کند: تأخیر کمتر، مصرف CPU/RAM کمتر و مناسب پلن ۵۱۲MB.
+
+### گام‌به‌گام
+
+1. **دامنهٔ عمومی بسازید** (اگر ندارید): Railway ← سرویس ← **Settings → Networking → Generate Domain**.
+   دامنه‌ای مثل `https://fozolpro-production.up.railway.app` می‌گیرید. باید **HTTPS** باشد (بله فقط HTTPS را قبول می‌کند).
+2. **یک راز تصادفی بسازید** (همان چیزی که در URL وبهوک می‌آید):
+   ```bash
+   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+   مثال خروجی: `q3Vt...Xk` — جای `<SECRET>` بگذارید.
+3. در Railway ← **Variables** این دو را اضافه کنید (یا از Raw بالا):
+   ```env
+   WEBHOOK_URL=https://<دامنهٔ-سرویس-شما>
+   WEBHOOK_SECRET=<SECRET>
+   ```
+   ⚠️ در `WEBHOOK_URL` **بدون** `/` انتهایی و **بدون** `/bale/webhook` — کد خودش مسیر را می‌سازد.
+4. **Redeploy** کنید. در لاگ باید این‌ها را ببینید (به ترتیب):
+   ```
+   config: mode=webhook ...
+   mode: webhook (set after port is ready)
+   ✅ webhook set → https://<دامنه>/bale/webhook/<SECRET>
+   webhook info: url=https://... pending_update_count=0 last_error_message=None
+   ```
+   کد وبهوک را **بعد از باز شدن پورت** ست می‌کند تا در پنجرهٔ ری‌استارت آپدیت گم نشود.
+5. **تست:** در بله به ربات `/start` بدهید؛ باید فوری جواب بدهد. برای دیدن وضعیت وبهوک از سمت بله:
+   ```bash
+   curl -s "https://tapi.bale.ai/bot<TOKEN>/getWebhookInfo"
+   ```
+   خروجی سالم: `"url":"https://<دامنه>/bale/webhook/<SECRET>"` و `"pending_update_count": 0`.
+6. **برگشت به polling:** کافی است `WEBHOOK_URL` را خالی کنید و Redeploy بزنید؛ کد خودش `deleteWebhook` می‌زند و polling را شروع می‌کند.
+
+### نکات امنیتی/عملیاتی
+
+- مسیر وبهوک شامل `<SECRET>` است و با `hmac.compare_digest` بررسی می‌شود؛ بدون آن درخواست ۴۰۳ می‌گیرد.
+- آپدیت‌های تکراری (بله وقتی پاسخ ۲۰۰ دیر برسد دوباره می‌فرستد) با `update_id` حذف می‌شوند — قبلاً هر پیام می‌توانست دو بار پردازش شود.
+- اگر `WEBHOOK_SECRET` خالی باشد و `WEBHOOK_URL` پر، سرویس با هشدار به polling برمی‌گردد.
+- اگر دامنه را عوض کردید، فقط `WEBHOOK_URL` را به‌روز و Redeploy کنید؛ کد وبهوک قدیمی را با `setWebhook` جدید جایگزین می‌کند.
+- هرگز `WEBHOOK_URL` را روی `http://` یا IP خام نگذارید.
+
+## ✨ جدید در نسخه ۵.۱ (پایداری ارسال + وبهوک + حافظه)
+
+- **گیت ارسال سه‌سطحی با اولویت** (`bot_sender` v5.1): پاسخ کاربر هرگز پشت پخش همگانی نمی‌ماند؛ پخش لِین جدا با سقف ۱ پیام/ثانیه.
+- **توقف سراسری ۴۲۹** + بودجهٔ انتظار محدود: ربات دیگر در نخ هندلر «هنگ» نمی‌کند.
+- **وبهوک آماده و فعال**: تنظیم پس از آمادگی پورت، حذف آپدیت تکراری، لاگ `webhook info`، بازگشت خودکار به polling در نبود SECRET.
+- **گارد حافظهٔ `memguard`** برای پلن ۵۱۲MB + `MALLOC_ARENA_MAX=2` + ری‌استارت محترمانه.
+- **پاک‌سازی کش‌ها**: `anon._vip_rate`، صف اعلان‌ها، آمار کال‌بک‌ها و صف تلمتری (به‌جای یک Thread برای هر کال‌بک).
+- **پخش همگانی حافظه‌ثابت**: پنجرهٔ ارسال محدود (به‌جای ثبت ۹۰۰۰ Future هم‌زمان) + توقف فوری و ادامه از محل قطع.
+- **رفع باگ‌ها**: `startup metrics failed: too many values to unpack`، خطای ۵۰۲ برای کاربر بلاک‌شده (اکنون ۴۰۹ با پیام روشن)، و `query is too old` (نگهبان ۶ ثانیه‌ای).
 
 ## ✨ جدید در نسخه ۴
 
@@ -100,14 +223,23 @@ fozol-pro/
 
 ## ⚙️ متغیرهای محیطی (Railway → Variables)
 
-| متغیر | ضروری | مقدار |
-|---|---|---|
-| `BOT_TOKEN` | ✅ | توکن ربات بله |
-| `ADMIN_ID` | ✅ | شناسه عددی سوپر ادمین (مثلاً `123456789`) |
-| `DB_PATH` | ✅ | `/data/bot_data.db` — «مسیر کامل فایل»؛ مقدار `/data` (فقط پوشه) غلط است |
-| `WEBAPP_URL` | ➖ | `https://<دامنهٔ سرویس>` — خالی = خودکار از `RAILWAY_PUBLIC_DOMAIN` |
-| `PROVIDER_TOKEN` | ➖ | توکن درگاه (`WALLET-...`) — خالی = خرید غیرفعال |
-| `MINIAPP_DEMO` | ➖ | پیش‌فرض `off` |
+| متغیر | ضروری | پیش‌فرض | توضیح |
+|---|---|---|---|
+| `BOT_TOKEN` | ✅ | — | توکن ربات بله |
+| `ADMIN_ID` | ✅ | — | شناسه عددی سوپر ادمین (مثلاً `123456789`) |
+| `DB_PATH` | ✅ | `/data/bot_data.db` | «مسیر کامل فایل»؛ مقدار `/data` (فقط پوشه) غلط است |
+| `WEBAPP_URL` | ➖ | خودکار | `https://<دامنهٔ سرویس>` — خالی = از `RAILWAY_PUBLIC_DOMAIN` |
+| `PROVIDER_TOKEN` | ➖ | — | توکن درگاه (`WALLET-...`) — خالی = خرید غیرفعال |
+| `WEBHOOK_URL` + `WEBHOOK_SECRET` | ➖ | خالی | هر دو پر = حالت وبهوک، خالی = polling |
+| `WEBHOOK_WORKERS` | ➖ | `4` | worker های پردازش وبهوک (۲–۴) |
+| `BOT_WORKER_THREADS` | ➖ | `4` | نخ‌های هندلر telebot (پاسخ موازی به کاربران) |
+| `SEND_GATE_RATE_PER_SEC` | ➖ | `2.0` | نرخ کل پیام‌سازها (سقف پایهٔ بله ۳/ثانیه) |
+| `SEND_BULK_RATE_PER_SEC` | ➖ | `1.0` | سقف لِین پخش همگانی |
+| `SEND_INLINE_MAX_WAIT` | ➖ | `10` | حداکثر انتظار یک پاسخ تعاملی (ثانیه) |
+| `SEND_429_MAX_PAUSE` | ➖ | `120` | سقف توقف سراسری پس از ۴۲۹ |
+| `MEM_SOFT_MB` / `MEM_HARD_MB` | ➖ | `320` / `440` | آستانهٔ بهداشت و ری‌استارت محترمانهٔ حافظه |
+| `MINIAPP_DEMO` | ➖ | `off` | `auto` \| `on` \| `off` |
+| `RATE_LIMIT_PER_MIN` | ➖ | `120` | سقف درخواست API مینی‌اپ برای هر کاربر |
 
 ### Volume
 سرویس ← Settings ← Volumes ← Mount Path = **`/data`**
@@ -128,6 +260,45 @@ fozol-pro/
 - خطِ `db: path=/data/bot_data.db | dir=/data | volume=True` در ابتدای لاگ یعنی دیتابیس سالم روی Volume است.
 - `GET /health` → `{"ok":true,"db":true,"bot":true}`
 - در بله `/start` بدهید ← دکمهٔ «📱 باز کردن مینی‌اپ» ← ورود بدون خطا.
+
+## 🩺 عیب‌یابی و پایداری (v5.1)
+
+### «ربات هنگ می‌کند / پیام نمی‌گیرد / دیر جواب می‌دهد»
+ریشهٔ این علائم در لاگ واقعی Railway (نسخهٔ ۵.۰) این بود:
+`[sender] 429 روی sendMessage … صبر و تکرار` (۲۸۸ بار در ۳۰ دقیقه) + `Callback error: query is too old`.
+یعنی نخ‌های هندلر در انتظار ۴۲۹ می‌خوابیدند و صف آپدیت‌ها پر می‌شد. اصلاحات v5.1:
+
+| مشکل قبلی | اصلاح |
+|---|---|
+| خوابِ درجای `retry_after` (تا ۵×۵۳ ثانیه) داخل نخ هندلر | بودجهٔ انتظار محدود (پیش‌فرض ۱۰ث)؛ بعد از آن «رد سریع» تا نخ آزاد بماند |
+| هر نخ جدا تلاش مجدد می‌کرد (جریمهٔ بله تمدید می‌شد) | **توقف سراسری**: یک ۴۲۹ همهٔ ارسال‌ها را تا پایان پنجره متوقف می‌کند |
+| سردی همیشگی گیت (هر ۴۲۹ → `now+120s`) | سردی یک‌بار در هر پنجره + **بازیابی تدریجی** نرخ (۱۰٪ هر ۳۰ث) |
+| پخش همگانی و اعلان‌ها توکن پاسخ کاربر را می‌خوردند | سه سطح اولویت: `high` (کاربر) > `normal` (اعلان) > `bulk` (پخش) با سقف نرخ جدا |
+| ۴۰۳ (کاربر ربات را بلاک کرده) تلاش مجدد و ۵۰۲ | بدون تلاش مجدد، `blocked_bot=1` و خطای روشن ۴۰۹ برای مینی‌اپ |
+| کال‌بک‌ها بعد از ۳۰ث بسته می‌شدند | نگهبان ۶ ثانیه‌ای + `answerCallbackQuery` مقاوم (تکراری/منقضی بی‌صدا) |
+| وب‌هوک آپدیت تکراری را دوباره پردازش می‌کرد | حذف تکراری با `update_id` + پاسخ فوری ۲۰۰ |
+
+### چه چیزی در لاگ سالم است؟
+
+```text
+[sender] sent=… edits=… 429=0 fast_fail=0 wait_avg=0.0s rate60=…/min gate=2.0/s factor=1.00 pause=0.0s queue={'high': 0, ...}
+```
+- `factor=1.00` و `pause=0.0s` = گیت در وضعیت سالم است.
+- اگر `429` بالا رفت، `SEND_GATE_RATE_PER_SEC` را ۰.۵ کم کنید (مثلاً `1.5`) و Redeploy.
+- اگر `fast_fail` زیاد شد یعنی ترافیک از سقف بله بیشتر است؛ نرخ را کم کنید نه بودجه را.
+
+### مصرف RAM و OOM روی پلن ۵۱۲MB
+
+- سرویس هر ۲ دقیقه این خط را چاپ می‌کند: `🧠 mem: rss=…MB peak=…MB soft=320 hard=440`.
+- با عبور از `MEM_SOFT_MB`: کش‌ها پاک، `gc.collect()` و `malloc_trim(0)` می‌شوند (صفحات آزاد به سیستم‌عامل برمی‌گردند).
+- با دو بار عبور پی‌درپی از `MEM_HARD_MB`: پروسه با SIGTERM تمیز ری‌استارت می‌شود (به‌جای OOM-kill وسط نوشتن SQLite).
+- `MEM_TRACE=1` پنج منبع بزرگ حافظه را در هر گزارش چاپ می‌کند (برای دیباگ).
+- `Dockerfile` مقدار `MALLOC_ARENA_MAX=2` دارد — این تنها تنظیمِ OS است که رشد RSS پروسهٔ چندنخی پایتون را واقعاً مهار می‌کند.
+- اگر هنوز OOM می‌شوید: `BROADCAST_WORKERS=1` و `MEM_HARD_MB=380` بگذارید و پخش همگانی را در ساعات خلوت اجرا کنید.
+
+### حجم دیتابیس
+- خط `📊 STARTUP_METRICS {... "db_size_mb": ...}` در هر استارتاپ اندازهٔ دیتابیس و WAL را نشان می‌دهد.
+- اگر WAL بزرگ شد (`db_wal_mb`)، یعنی نوشتن زیاد است؛ بکاپ شبانه + `PRAGMA wal_checkpoint` خودکار انجام می‌شود.
 
 ## 🔐 امنیت
 

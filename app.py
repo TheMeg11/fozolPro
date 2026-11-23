@@ -539,28 +539,53 @@ def create_app(bot: Any = None) -> FastAPI:
     def a_backup(_: dict = Depends(admin_user)):
         return ok(admin_svc.backup_now())
 
-    # ---------- وب‌هوک بله (اختیاری) ----------
+    # ---------- وب‌هوک بله ----------
     if settings.WEBHOOK_URL and settings.WEBHOOK_SECRET:
         # v5.0: به‌جای یک نخ مجزا برای هر آپدیت (burst ارسال زیر بار)،
         # صف داخلی با ۲-۴ worker — هم‌زمانی کنترل‌شده + گیت سراسری bot_sender.
         wh_pool = ThreadPoolExecutor(max_workers=settings.WEBHOOK_WORKERS,
                                      thread_name_prefix="bale-wh")
+        # v5.1: حذف آپدیت تکراری — بله در نبود پاسخ ۲۰۰ همان آپدیت را دوباره
+        # می‌فرستد؛ بدون dedupe، هر پیام کاربر دو-سه بار پردازش و دوبار ارسال می‌شد.
+        _seen_ids: deque = deque(maxlen=4000)
+        _seen_set: set = set()
+        _seen_lock = threading.Lock()
+
+        def _seen_before(update_id) -> bool:
+            if update_id is None:
+                return False
+            with _seen_lock:
+                if update_id in _seen_set:
+                    return True
+                _seen_set.add(update_id)
+                _seen_ids.append(update_id)
+                while len(_seen_set) > 4000 and _seen_ids:
+                    _seen_set.discard(_seen_ids[0])
+                    _seen_ids.popleft()
+                return False
 
         @app.post("/bale/webhook/{secret}")
         async def webhook(secret: str, request: Request):
             if not hmac.compare_digest(secret, settings.WEBHOOK_SECRET):
                 raise AppError("FORBIDDEN", "forbidden", 403)
             payload = await request.body()
-            if app.state.bot is not None:
+            if app.state.bot is not None and payload:
                 import telebot  # pyTelegramBotAPI (سازگار با Bot API بله)
 
-                update = telebot.types.Update.de_json(payload.decode("utf-8"))
                 try:
-                    wh_pool.submit(app.state.bot.process_new_updates, [update])
+                    update = telebot.types.Update.de_json(payload.decode("utf-8"))
                 except Exception:
-                    # فالبک: اگر استخر مشکل خورد، نخ عادی
-                    threading.Thread(target=app.state.bot.process_new_updates, args=([update],), daemon=True).start()
-            return {"ok": True}
+                    log.warning("webhook: invalid update payload (%d bytes)", len(payload))
+                    return {"ok": True}
+                if update is not None and not _seen_before(getattr(update, "update_id", None)):
+                    try:
+                        wh_pool.submit(app.state.bot.process_new_updates, [update])
+                    except Exception:
+                        # فالبک: اگر استخر مشکل خورد (shutdown/صف پر)، نخ عادی
+                        threading.Thread(target=app.state.bot.process_new_updates,
+                                         args=([update],), daemon=True).start()
+            # پاسخ فوری: بله منتظر ۲۰۰ می‌ماند؛ تأخیر در پاسخ = ارسال دوبارهٔ آپدیت
+            return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 
     # ---------- آواتار (پروکسی عکس پروفایل با امضا؛ بدون هدر initData چون تگ <img> است) ----------
     @app.get("/api/avatar/{uid}.jpg")

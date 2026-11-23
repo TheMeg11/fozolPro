@@ -3,7 +3,7 @@ from telebot import apihelper, types
 import os, io, sqlite3, datetime, time, threading, re, string, requests, random, logging, sys, shutil, tempfile, hashlib
 from collections import defaultdict, deque
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 # اضافه کردن مسیر site-packages کاربر برای دسترسی به jdatetime
 try:
@@ -16,6 +16,7 @@ except ImportError:
 import texts
 import tasks as tasks_module
 import config
+import memguard  # v5.1: گارد حافظه (RSS واقعی + بهداشت دوره‌ای)
 import bot_sender  # v5.0: ماژول ارسال متمرکز — گیت سراسری + مدیریت 429 + آمار برای همهٔ ارسال‌ها
 from telebot.apihelper import ApiTelegramException
 
@@ -74,6 +75,24 @@ class _ErrorCounter(logging.Handler):
 
 ERROR_COUNTER = _ErrorCounter()
 logging.getLogger().addHandler(ERROR_COUNTER)
+
+
+def _log_send_error(where, exc, user_id=None):
+    """v5.1: خطای «کاربر ربات را بلاک کرده» خطا نیست — لاگ سطح info + علامت‌گذاری.
+
+    در لاگ Railway این‌ها به‌صورت ERROR شمرده می‌شدند (۳ بار در چند دقیقه) و
+    شمارندهٔ «مشکلات ربات» را الکی بالا می‌بردند، در حالی که رفتار طبیعی است.
+    """
+    msg = str(exc).lower()
+    if getattr(exc, "error_code", None) == 403 or "bot was blocked" in msg or "user is deactivated" in msg:
+        logger.info("%s: گیرنده در دسترس نیست (%s)", where, "blocked")
+        try:
+            if user_id:
+                db.mark_user_blocked_bot(int(user_id))
+        except Exception:
+            pass
+        return
+    logger.error("%s: %s", where, exc)
 
 # ====== مسیرها ======
 BASE_DIR = Path(__file__).parent
@@ -262,6 +281,115 @@ def _bale_make_request(token, method_url, params=None, method='post', files=None
 
     return bot_sender.gated(_dispatch, method_url, params)
 apihelper._make_request = _bale_make_request
+
+# ====== v5.1: اولویت ارسال + محافظ «query is too old» ======
+# ریشهٔ ۴۶ خطای «query is too old» در لاگ: نخ‌های هندلر در انتظار گیت/۴۲۹
+# می‌خوابیدند و answerCallbackQuery بعد از ۳۰ ثانیه می‌رسید. سه اصلاح:
+#   ۱) هر آپدیت در نخ هندلر با اولویت high پردازش می‌شود؛ پخش همگانی bulk است.
+#   ۲) یک نگهبان، اگر هندلر تا ۶ ثانیه پاسخ کالبک را نداده باشد، خودش
+#      answerCallbackQuery خالی می‌زند تا دکمه «مرده» نماند و خطای ۴۰۰ نگیریم.
+#   ۳) پاسخ‌های بعدیِ همان کال‌بک (متن alert) بی‌صدا نادیده گرفته می‌شوند.
+
+_cb_answered: dict[str, float] = {}
+_cb_answered_lock = threading.Lock()
+_original_answer_cb = bot.answer_callback_query
+
+
+def _cb_mark_answered(call_id: str) -> bool:
+    """True اگر قبلاً (توسط نگهبان) پاسخ داده شده باشد."""
+    cid = str(call_id or "")
+    if not cid:
+        return False
+    with _cb_answered_lock:
+        now_t = time.time()
+        if len(_cb_answered) > 2000:  # هرس — حافظه بی‌سقف رشد نکند
+            for k in [k for k, v in _cb_answered.items() if v < now_t - 600]:
+                _cb_answered.pop(k, None)
+        if cid in _cb_answered:
+            return True
+        _cb_answered[cid] = now_t
+        return False
+
+
+def _safe_answer_callback_query(callback_query_id, text=None, *a, **kw):
+    """answerCallbackQuery مقاوم: تکراری/منقضی هرگز استثنا نمی‌دهد."""
+    if _cb_mark_answered(callback_query_id):
+        return None
+    try:
+        return _original_answer_cb(callback_query_id, text, *a, **kw)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "too old" in msg or "query id is invalid" in msg or getattr(exc, "error_code", None) == 400:
+            return None  # کالبک منقضی/تکراری — بی‌اهمیت
+        raise
+
+
+bot.answer_callback_query = _safe_answer_callback_query
+
+# نگهبان تک‌نخی: به‌جای یک Timer برای هر کالبک، یک حلقهٔ سبک هر ۰.۵ ثانیه
+# کالبک‌هایی را که هندلرشان از ۶ ثانیه گذشته (و هنوز پاسخ نگرفته‌اند) می‌بندد.
+_cb_deadlines: dict[str, float] = {}
+_cb_deadline_lock = threading.Lock()
+CB_WATCHDOG_SEC = 6.0
+
+
+def _cb_watch_start(call_id: str) -> None:
+    with _cb_deadline_lock:
+        if len(_cb_deadlines) > 1000:
+            now_m = time.monotonic()
+            for k in [k for k, v in _cb_deadlines.items() if v < now_m]:
+                _cb_deadlines.pop(k, None)
+        _cb_deadlines[str(call_id)] = time.monotonic() + CB_WATCHDOG_SEC
+
+
+def _cb_watch_stop(call_id: str) -> None:
+    with _cb_deadline_lock:
+        _cb_deadlines.pop(str(call_id), None)
+
+
+def _cb_watch_loop() -> None:
+    while True:
+        time.sleep(0.5)
+        due = []
+        try:
+            now_m = time.monotonic()
+            with _cb_deadline_lock:
+                for cid, deadline in list(_cb_deadlines.items()):
+                    if deadline <= now_m:
+                        due.append(cid)
+                        _cb_deadlines.pop(cid, None)
+            for cid in due:
+                _safe_answer_callback_query(cid)
+        except Exception:
+            pass
+
+
+threading.Thread(target=_cb_watch_loop, daemon=True, name="cb-watchdog").start()
+
+
+# نکتهٔ مهم: telebot هر هندلر را در «نخ‌های worker» خودش اجرا می‌کند، نه در نخی
+# که process_new_updates را صدا زده. پس اولویت را همان‌جا (داخل worker) ست می‌کنیم.
+_original_exec_task = getattr(bot, "_exec_task", None)
+
+
+def _exec_task_with_priority(task, *args, **kwargs):
+    """همهٔ ارسال‌های داخل هندلر با اولویت high (بالاتر از اعلان و پخش همگانی)."""
+
+    def _wrapped(*a, **kw):
+        with bot_sender.priority(bot_sender.HIGH):
+            return task(*a, **kw)
+
+    try:
+        _wrapped.__name__ = getattr(task, "__name__", "handler")
+    except Exception:
+        pass
+    return _original_exec_task(_wrapped, *args, **kwargs)
+
+
+if callable(_original_exec_task):
+    bot._exec_task = _exec_task_with_priority
+else:  # pragma: no cover — نسخه‌های قدیمی telebot
+    logger.warning("telebot._exec_task موجود نیست — اولویت ارسال هندلرها اعمال نشد")
 
 # ====== v3.19: ادیت امن پیام پنل — رفع باگ «دکمه‌های زیر پیام عکس‌دار کار نمی‌کند» ======
 # در Bale پیامِ حاوی عکس/ویدیو با edit_message_text ادیت نمی‌شود → دکمه‌ها مرده به‌نظر می‌رسند.
@@ -1859,13 +1987,16 @@ def _run_broadcast_async_impl(admin_chat_id, preview_msg, resume_state=None, mar
         if broadcast_stop_flag.is_set():
             return ('skipped', uid)
 
-        result = _send_broadcast_single(
-            broadcast_bot, uid, from_chat_id, message_id,
-            reply_markup=current_markup,
-            is_text=use_one_shot,
-            text_content=text_content,
-            parse_mode=bc_parse_mode,
-        )
+        # v5.1: لِین bulk — گیت هرگز توکن را به پخش نمی‌دهد اگر درخواست کاربر
+        # در صف باشد؛ نرخ پخش هم سقف جدا دارد (SEND_BULK_RATE_PER_SEC).
+        with bot_sender.priority(bot_sender.BULK):
+            result = _send_broadcast_single(
+                broadcast_bot, uid, from_chat_id, message_id,
+                reply_markup=current_markup,
+                is_text=use_one_shot,
+                text_content=text_content,
+                parse_mode=bc_parse_mode,
+            )
 
         with stats_lock:
             counters['processed'] += 1
@@ -1881,33 +2012,47 @@ def _run_broadcast_async_impl(admin_chat_id, preview_msg, resume_state=None, mar
 
         return (result, uid)
 
-    # v5.0: سقف نخ‌های پخش ۱۶→۴ — گیت سراسری نرخ واقعی را تعیین می‌کند؛
-    # نخ بیشتر فقط صف گیت را شلوغ می‌کند و burst می‌سازد.
-    workers = min(BROADCAST_WORKERS, 4)
+    # v5.1: سقف نخ‌های پخش ۴→۲ + پنجرهٔ ارسال محدود (به‌جای ۹۰۰۰ Future هم‌زمان)
+    # گیت سراسری نرخ واقعی را تعیین می‌کند؛ نخ/صف بیشتر فقط burst و حافظه می‌سازد.
+    workers = min(BROADCAST_WORKERS, 2)
+
+    def _submit_window(executor, pool, it, limit):
+        while len(pool) < limit:
+            uid = next(it, None)
+            if uid is None:
+                return False
+            pool[executor.submit(send_to_user, uid)] = uid
+        return True
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        # Submit all tasks
-        futures = {executor.submit(send_to_user, uid): uid for uid in users}
+        it = iter(users)
+        pending = {}
+        window = max(8, workers * 8)
+        more = _submit_window(executor, pending, it, window)
 
-        for future in as_completed(futures):
+        while pending:
+            done_set, _ = wait(list(pending), timeout=1.0, return_when=FIRST_COMPLETED)
             if broadcast_stop_flag.is_set():
-                # لغو بقیه task ها
-                for f in futures:
+                # لغو کارهای در صف (کارهای در حال اجرا با پرچم stop خودشان برمی‌گردند)
+                for f in pending:
                     f.cancel()
-                skipped_cnt = sum(1 for f in futures if not f.done())
+                skipped_cnt = sum(1 for f in pending if not f.done())
+                pending.clear()
                 break
 
-            try:
-                result, uid = future.result()
-                if result == 'skipped':
-                    skipped_cnt += 1
-            except Exception as e:
-                logger.error(f"Broadcast worker error for uid={futures[future]}: {e}")
-                with stats_lock:
-                    counters['failed'] += 1
-                    counters['processed'] += 1
+            for future in done_set:
+                pending.pop(future, None)
+                try:
+                    result, uid = future.result()
+                    if result == 'skipped':
+                        skipped_cnt += 1
+                except Exception as e:
+                    logger.error("Broadcast worker error: %s", e)
+                    with stats_lock:
+                        counters['failed'] += 1
+                        counters['processed'] += 1
 
-            processed_this_run += 1
+                processed_this_run += 1
             done_now = done0 + processed_this_run
 
             # به‌روزرسانی پیام پیشرفت هر ۵ ثانیه + ثبت وضعیت resume
@@ -1941,13 +2086,17 @@ def _run_broadcast_async_impl(admin_chat_id, preview_msg, resume_state=None, mar
                 except: pass
                 # v3.23: ثبت پیشرفت هم‌زمان با گزارش
                 _bc_state_write(admin_chat_id, progress_msg_id, from_chat_id, message_id, total, done_now, sent_cnt, blocked_cnt, failed_cnt)
-            elif (processed_this_run % 200) == 0:
+            elif processed_this_run and (processed_this_run % 200) == 0:
                 # v3.23: ثبت پیشرفت هر ۲۰۰ پیام
                 with stats_lock:
                     sent_cnt = counters['sent']
                     blocked_cnt = counters['blocked']
                     failed_cnt = counters['failed']
                 _bc_state_write(admin_chat_id, progress_msg_id, from_chat_id, message_id, total, done_now, sent_cnt, blocked_cnt, failed_cnt)
+
+            # v5.1: پنجرهٔ بعدی فقط وقتی صف سبک شد (حافظهٔ ثابت در پخش ۹۰۰۰ نفره)
+            if more and not broadcast_stop_flag.is_set():
+                more = _submit_window(executor, pending, it, window)
 
     # اگه توقف نشده، آمار نهایی رو از counters بگیر
     with stats_lock:
@@ -2107,7 +2256,7 @@ def award_xp_with_level_up_notify(user_id, amount, recurring_type=None, bonus_ty
                     else:
                         bot.send_message(target_chat, msg)
                 except Exception as e:
-                    logger.error(f"Level-up notify error: {e}")
+                    _log_send_error("Level-up notify", e, target_chat)
             except Exception as e:
                 logger.error(f"Level-up message build error: {e}")
 
@@ -2169,7 +2318,7 @@ def _check_and_award_tasks_xp(user_id, notify=True):
                                 else:
                                     bot.send_message(user_id, msg)
                             except Exception as e:
-                                logger.error(f"Level-up notify error: {e}")
+                                _log_send_error("Level-up notify", e, user_id)
                         except Exception as e:
                             logger.error(f"Level-up msg build error: {e}")
         except Exception as e:
@@ -2211,7 +2360,7 @@ def _check_and_award_tasks_xp(user_id, notify=True):
                 notif += f"\n💎 مجموع پاداش: +{to_persian_int(total_xp)} XP"
             bot.send_message(user_id, notif)
         except Exception as e:
-            logger.error(f"Task instant notify error: {e}")
+            _log_send_error("Task instant notify", e, user_id)
     # صف برای سازگاری — دیگر جایی مصرف نمی‌شود (اعلان همان‌جا ارسال شد)
     if newly_completed:
         try:
@@ -3591,6 +3740,19 @@ def usage_cmd(message):
                 lines.append(f"  {r['hour']} — {to_persian_int(r['n'])} خطا")
         else:
             lines.append("🧯 خطایی در ۲۴ ساعت اخیر ثبت نشده ✅")
+        # v5.1: وضعیت زندهٔ گیت ارسال (۴۲۹/توقف سراسری/صف اولویت‌ها)
+        try:
+            lines.append("")
+            lines.append("🚦 *وضعیت ارسال:*")
+            lines.append(bot_sender.stats_text())
+        except Exception:
+            pass
+        try:
+            import memguard as _mg
+
+            lines.append("🧠 *حافظه:* rss=%.0fMB" % _mg.rss_mb())
+        except Exception:
+            pass
         bot.send_message(message.chat.id, "\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         logger.error(f"usage report error: {e}")
@@ -5664,7 +5826,7 @@ def show_task_detail_popup(call, user_id, task_id):
                                 else:
                                     bot.send_message(user_id, msg)
                             except Exception as e:
-                                logger.error(f"Level-up notify error: {e}")
+                                _log_send_error("Level-up notify", e, user_id)
                         except Exception as e:
                             logger.error(f"Level-up msg build error: {e}")
 
@@ -6369,17 +6531,49 @@ def send_or_edit_message(chat_id, text, markup, message_id):
 _pending_forcejoin_msgs = {}  # v3.9.2: user_id -> message_id پیام عضویت اجباری (برای پاک‌سازی بعدی)
 
 # ====== کیبورد شیشه‌ای (یکپارچه) ======
+# v5.1: تلمتری/آمار از نخ هندلر خارج شد — یک صف با یک worker.
+# قبلاً برای هر کالبک یک threading.Thread تازه ساخته می‌شد (churn + رشد حافظه).
+import queue as _queue
+
+_telemetry_q: "_queue.Queue" = _queue.Queue(maxsize=5000)
+
+
+def _telemetry_worker():
+    while True:
+        job = _telemetry_q.get()
+        try:
+            job()
+        except Exception:
+            pass
+        finally:
+            _telemetry_q.task_done()
+
+
+def telemetry(job) -> None:
+    """کارهای سبک آماری را به worker واحد می‌سپارد (بدون بلاک کردن هندلر)."""
+    try:
+        _telemetry_q.put_nowait(job)
+    except _queue.Full:
+        pass
+
+
+threading.Thread(target=_telemetry_worker, daemon=True, name="telemetry").start()
+
+
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     # v3.24.4: تلمتری — wrap کامل؛ همهٔ خروجی‌ها (returnهای داخلی) پوشش داده می‌شوند
     _t0 = time.time()
+    # v5.1: نگهبان ۶ ثانیه‌ای — اگر هندلر کند باشد، کالبک بسته می‌شود تا
+    # «query is too old» پیش نیاید و دکمه‌ها مرده نمانند.
+    _cb_watch_start(call.id)
     try:
         _callback_handler_impl(call)
     finally:
-        try:
-            db.log_usage_event("cb", call.data[:120], (time.time() - _t0) * 1000)
-        except Exception:
-            pass
+        _cb_watch_stop(call.id)
+        _ms = (time.time() - _t0) * 1000
+        _data = (call.data or "")[:120]
+        telemetry(lambda: db.log_usage_event("cb", _data, _ms))
 
 def _callback_handler_impl(call):
     global broadcast_mode, broadcast_admin_chat, broadcast_preview_msg, broadcast_started_at
@@ -6406,7 +6600,7 @@ def _callback_handler_impl(call):
             db.sync_user_profile(user_id, call.from_user.first_name, call.from_user.username)
         except Exception:
             pass
-    threading.Thread(target=_cb_stats_bg, daemon=True).start()
+    telemetry(_cb_stats_bg)
     while True:
         try:
             if db.is_blocked(user_id):
@@ -10156,6 +10350,59 @@ def broadcast_timeout_watcher():
         except Exception as e:
             logger.error(f"Broadcast watcher error: {e}")
 
+def _prune_memory_caches(now=None):
+    """v5.1: پاک‌سازی کش‌های درون‌حافظه‌ای که برای کاربران غیرفعال می‌مانند.
+
+    منبع رشد آهستهٔ RSS در گزارش Railway (۱۲۹→۱۴۶MB در ۳۰ دقیقه) همین‌جور
+    ساختارهای «کلید=user_id» بود که برای ۹۰۰۰ کاربر بی‌سقف می‌ماندند.
+    """
+    now = now or time.time()
+    # ۱) صف اعلان ماموریت‌ها: فقط کاربرانی که واقعاً اعلان معلق دارند بمانند
+    try:
+        with _pending_task_lock:
+            for _uid in [u for u, v in _pending_task_notifications.items() if not v]:
+                _pending_task_notifications.pop(_uid, None)
+            if len(_pending_task_notifications) > 20000:
+                _pending_task_notifications.clear()
+    except Exception:
+        pass
+    # ۲) کش عضویت کانال‌های اجباری (TTL)
+    try:
+        with _subscription_cache_lock:
+            for _k in [k for k, (_v, _ts) in _subscription_cache.items() if now - _ts >= SUBSCRIPTION_CACHE_TTL]:
+                _subscription_cache.pop(_k, None)
+            if len(_subscription_cache) > 20000:
+                _subscription_cache.clear()
+    except Exception:
+        pass
+    # ۳) کاربران تازه‌فعال (اسکنر ماموریت)
+    try:
+        with _recently_active_lock:
+            if len(_recently_active) > 500:
+                _cut = now - 600
+                for _k in [k for k, v in _recently_active.items() if v < _cut]:
+                    _recently_active.pop(_k, None)
+    except Exception:
+        pass
+    # ۴) کش پاسخ کالبک‌ها (نگهبان query too old)
+    try:
+        with _cb_answered_lock:
+            if len(_cb_answered) > 1000:
+                for _k in [k for k, v in _cb_answered.items() if v < now - 300]:
+                    _cb_answered.pop(_k, None)
+    except Exception:
+        pass
+    # ۵) صف تلمتری پرشده — تخلیهٔ ناامن نیست، فقط لاگ
+    try:
+        if _telemetry_q.qsize() > 4000:
+            logger.warning("telemetry queue saturated (%d) — dropping backlog", _telemetry_q.qsize())
+    except Exception:
+        pass
+
+
+memguard.register_pruner(_prune_memory_caches)
+
+
 def periodic_cleanup():
     while True:
         time.sleep(300)
@@ -10227,17 +10474,18 @@ def periodic_cleanup():
             flush_persisted_stats()
         except Exception as e:
             logger.error(f"stats flush error: {e}")
-        # ── v3.19: گزارش حافظه (RSS) هر ~۳۰ دقیقه برای پایش Railway ──
+        # ── v5.1: حافظه — گزارش RSS واقعی + بهداشت (memguard مسئول پایش دوره‌ای است) ──
         try:
-            if int(now) % 1800 < 300:
-                try:
-                    import resource as _res
-                    _rss = _res.getrusage(_res.RUSAGE_SELF).ru_maxrss
-                except Exception:
-                    _rss = 0
-                print("🧠 MEMORY: rss_max=%dKB" % _rss, flush=True)
+            import memguard as _mg
+
+            _mg.trim(prune=False)  # هر ۵ دقیقه GC + بازگرداندن صفحات آزاد به OS
         except Exception:
             pass
+        # ── v5.1: پاک‌سازی صف‌های تلمتری/اعلان کاربران غیرفعال ──
+        try:
+            _prune_memory_caches(now)
+        except Exception as _pm_err:
+            logger.debug("prune caches: %s", _pm_err)
 
 threading.Thread(target=periodic_cleanup, daemon=True).start()
 threading.Thread(target=clean_logs_periodically, daemon=True).start()
@@ -10299,8 +10547,11 @@ def print_startup_metrics():
         m["vip_repeat_buyers"] = q("SELECT COUNT(*) FROM (SELECT user_id FROM transactions WHERE type='vip' GROUP BY user_id HAVING COUNT(*) > 1)")
         m["revenue_total_rial"] = q("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE type IN ('vip','gift_vip')")
         m["tx_gift_vip"] = q("SELECT COUNT(*) FROM transactions WHERE type='gift_vip'")
-        for d_, amt in db.conn.execute("SELECT days, COUNT(*), COALESCE(SUM(amount),0) FROM transactions WHERE type='vip' GROUP BY days").fetchall():
-            m[f"plan_{d_}d"] = f"{amt[1]}x {amt[2]}"
+        # v5.1: رفع باگ «too many values to unpack» — کوئری ۳ ستون برمی‌گرداند
+        for d_, cnt_, amt_ in db.conn.execute(
+            "SELECT days, COUNT(*), COALESCE(SUM(amount),0) FROM transactions WHERE type='vip' GROUP BY days"
+        ).fetchall():
+            m[f"plan_{d_}d"] = f"{cnt_}x {amt_}"
         # میانگین فاصلهٔ ثبت‌نام تا اولین خرید
         m["avg_days_to_first_buy"] = q("SELECT COALESCE(ROUND(AVG(julianday(t.ts) - julianday(u.created_at)),1),0) FROM (SELECT user_id, MIN(timestamp) ts FROM transactions WHERE type='vip' GROUP BY user_id) t JOIN users u ON u.user_id=t.user_id")
         m["active_vip_now"] = q("SELECT COUNT(*) FROM vip WHERE expire_date >= date('now')")
@@ -10407,6 +10658,8 @@ def start_background_tasks(bot=None):
 
 # ====== اجرا ======
 if __name__ == "__main__":
+    print("⚠️ اجرای مستقیم main.py فقط برای توسعه است؛ روی Railway نقطهٔ ورود run.py است "
+          "(وبهوک/polling و گارد حافظه آنجا مدیریت می‌شوند).", flush=True)
     print(f"🚀 ربات @{BOT_USERNAME} راه‌اندازی شد.", flush=True)
     BOT_START_TIME = time.time()
     print_startup_metrics()

@@ -455,6 +455,8 @@ USER_COLUMNS = {
     "last_wheel_date": "TEXT",
     "last_giftvip_date": "TEXT",
     "trial_given": "INTEGER DEFAULT 0",
+    # v5.1: وضعیت «کاربر ربات را بلاک کرده» — پخش/اعلان‌ها دوباره سراغش نروند
+    "blocked_bot": "INTEGER DEFAULT 0",
 }
 
 

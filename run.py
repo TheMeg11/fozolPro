@@ -1,53 +1,31 @@
 """نقطهٔ ورود سرویس Railway: ربات بله + API مینی‌اپ در یک پروسس.
 
 - uvicorn روی 0.0.0.0:$PORT؛ SIGTERM/SIGINT توسط uvicorn مدیریت می‌شود و پس از آن polling متوقف و DB بسته می‌شود.
-- دریافت آپدیت: polling (پیش‌فرض) یا webhook (WEBHOOK_URL + WEBHOOK_SECRET).
+- دریافت آپدیت: webhook (پیش‌فرض وقتی WEBHOOK_URL + WEBHOOK_SECRET ست باشد) یا polling.
+  v5.1: در حالت webhook، ست‌کردن وبهوک **بعد از بالا آمدن پورت** انجام می‌شود؛
+  قبلاً قبل از listen ست می‌شد و در پنجرهٔ کوتاه اولیه بله ۴۰۴ می‌گرفت.
+- گارد حافظه (memguard) برای پلن ۵۱۲MB: RSS واقعی + بهداشت + ری‌استارت محترمانه.
 - فقط یک instance (numReplicas=1) به‌خاطر SQLite و polling.
 """
 from __future__ import annotations
 
 import logging
+import socket
 import sys
 import threading
+import time
 
 import uvicorn
 
 import settings
 
 
-def start_memory_hygiene() -> None:
-    """v5.0.2: بهداشت حافظهٔ دوره‌ای — هر ساعت gc.collect() + malloc_trim(0).
-
-    پروسهٔ طولانی‌عمرِ ربات با رندر تصویر (Pillow/raqm) و ترافیک HTTPS، دچار رشد
-    تدریجی RSS ناشی از fragmentation در allocator می‌شود (صفحات آزاد‌شده به OS
-    برنمی‌گشتند؛ روند مشاهده‌شده: ~۱۶۰MB در روز). malloc_trim صفحات آزاد heap
-    را به سیستم‌عامل برمی‌گرداند — بدون توقف سرویس و بدون دست‌زدن به منطق برنامه."""
-    import ctypes
-    import gc
-    import time
-
-    try:
-        libc = ctypes.CDLL("libc.so.6")
-        _trim = libc.malloc_trim
-    except (OSError, AttributeError):
-        return
-
-    def _run() -> None:
-        while True:
-            time.sleep(3600)
-            try:
-                gc.collect()
-                _trim(0)
-            except Exception:
-                pass
-
-    threading.Thread(target=_run, name="memory-hygiene", daemon=True).start()
-
-
 def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     logging.getLogger("uvicorn.access").disabled = True
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+    # لاگ‌های پرحجمِ کتابخانه که فقط نویز تولید می‌کنند (مصرف CPU/حافظه در پلن کوچک)
+    logging.getLogger("telebot").setLevel(logging.WARNING)
 
 
 def configure_telebot_for_bale() -> None:
@@ -59,7 +37,7 @@ def configure_telebot_for_bale() -> None:
 
 
 def load_bot():
-    """ربات فعلی را از main.py بارگذاری می‌کند (main.py نباید هنگام import، polling را شروع کند — patch را ببینید)."""
+    """ربات فعلی را از main.py بارگذاری می‌کند (main.py نباید هنگام import، polling را شروع کند)."""
     log = logging.getLogger("run")
     if not settings.BOT_TOKEN:
         log.warning("BOT_TOKEN not set — running API only")
@@ -98,6 +76,66 @@ def start_polling(bot) -> threading.Thread:
     return t
 
 
+def _port_open(port: int, host: str = "127.0.0.1") -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def set_webhook_when_listening(url: str, timeout: float = 90.0) -> None:
+    """v5.1: وبهوک فقط وقتی ست می‌شود که خود سرویس در حال listen باشد.
+
+    اگر setWebhook قبل از آمادگی پورت اجرا شود، بله ممکن است آپدیت‌ها را در
+    همان پنجره به سرویسِ در حال ری‌استارت بفرستد و گم شوند.
+    """
+    log = logging.getLogger("webhook")
+    from services import bale_api
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _port_open(settings.PORT):
+            break
+        time.sleep(0.5)
+    else:
+        log.warning("port %s did not open in %.0fs — setting webhook anyway", settings.PORT, timeout)
+
+    for attempt in range(1, 6):
+        try:
+            # فقط url — بله پارامترهای اضافی تلگرامی را در برخی نسخه‌ها رد می‌کند
+            bale_api.call("setWebhook", url=url)
+            log.info("✅ webhook set → %s", url)
+            try:
+                info = bale_api.call("getWebhookInfo") or {}
+                log.info("webhook info: url=%s pending=%s last_error=%s",
+                         info.get("url"), info.get("pending_update_count"), info.get("last_error_message"))
+            except Exception:
+                pass
+            return
+        except Exception as exc:
+            wait = min(30, 2 ** attempt)
+            log.warning("setWebhook attempt %d failed (%s) — retry in %ss", attempt, exc.__class__.__name__, wait)
+            time.sleep(wait)
+    log.error("❌ could not set webhook — سرویس در حالت بدون آپدیت می‌ماند؛ WEBHOOK_URL را بررسی کنید")
+
+
+def log_effective_config() -> None:
+    """خلاصهٔ تنظیمات مؤثر در استارتاپ — برای دیباگ سریع از روی لاگ Railway."""
+    import bot_sender
+
+    log = logging.getLogger("run")
+    mode = "webhook" if (settings.WEBHOOK_URL and settings.WEBHOOK_SECRET) else "polling"
+    log.info(
+        "config: mode=%s port=%s webapp=%s | send-gate=%.1f/s burst=%d bulk=%.1f/s edit=%.1f/s "
+        "per_chat=%.1fs inline_budget=%.0fs | webhook_workers=%d",
+        mode, settings.PORT, settings.WEBAPP_URL or "-",
+        bot_sender.RATE_PER_SEC, bot_sender.BURST, bot_sender.BULK_RATE_PER_SEC,
+        bot_sender.EDIT_RATE_PER_SEC, bot_sender.PER_CHAT_SEC, bot_sender.INLINE_BUDGET,
+        settings.WEBHOOK_WORKERS,
+    )
+
+
 def main() -> None:
     setup_logging()
     log = logging.getLogger("run")
@@ -105,18 +143,27 @@ def main() -> None:
 
     db.migrate()
     admin.recover_jobs()
-    start_memory_hygiene()
+    log_effective_config()
+
+    import memguard
+
+    memguard.start()
+
     bot, legacy = load_bot()
+    webhook_url = f"{settings.WEBHOOK_URL}/bale/webhook/{settings.WEBHOOK_SECRET}" if (
+        settings.WEBHOOK_URL and settings.WEBHOOK_SECRET) else ""
 
     if bot is not None:
-        if settings.WEBHOOK_URL and settings.WEBHOOK_SECRET:
-            from services import bale_api
-
-            bale_api.set_webhook(f"{settings.WEBHOOK_URL}/bale/webhook/{settings.WEBHOOK_SECRET}")
-            log.info("webhook mode")
+        if webhook_url:
+            threading.Thread(target=set_webhook_when_listening, args=(webhook_url,),
+                             name="webhook-setup", daemon=True).start()
+            log.info("mode: webhook (set after port is ready)")
+        elif settings.WEBHOOK_URL and not settings.WEBHOOK_SECRET:
+            log.warning("WEBHOOK_URL ست شده ولی WEBHOOK_SECRET خالی است — به polling برمی‌گردیم")
+            start_polling(bot)
         else:
             start_polling(bot)
-            log.info("polling mode")
+            log.info("mode: polling")
         starter = getattr(legacy, "start_background_tasks", None)  # tasks.py: بکاپ شبانه و انقضای VIP
         if callable(starter):
             starter(bot)
@@ -134,7 +181,10 @@ def main() -> None:
                 bot.stop_polling()
             except Exception:
                 pass
-        db.close_all()
+        try:
+            db.close_all()
+        except Exception:
+            pass
         log.info("shutdown complete")
 
 
