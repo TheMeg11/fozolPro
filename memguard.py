@@ -37,6 +37,11 @@ SOFT_MB = float(os.environ.get("MEM_SOFT_MB") or 320)
 HARD_MB = float(os.environ.get("MEM_HARD_MB") or 440)
 TRACE = os.environ.get("MEM_TRACE", "0").strip() in ("1", "true", "yes", "on")
 
+# v5.2: پرچم «خروج به‌خاطر حافظه» — run.py بعد از بستن تمیز DB، با این پرچم
+# با کد خروج 1 خارج می‌شود تا Railway حتی با restartPolicy=ON_FAILURE هم
+# سرویس را دوباره بالا بیاورد (با exit 0 هرگز ری‌استارت نمی‌شود).
+SELF_TERMINATED = False
+
 _pruners: list = []
 _lock = threading.Lock()
 
@@ -128,6 +133,8 @@ def _loop() -> None:
                 over_hard += 1
                 log.error("🧠 RSS %.0fMB ≥ %.0fMB (نوبت %d)", mb, HARD_MB, over_hard)
                 if over_hard >= 2:
+                    global SELF_TERMINATED
+                    SELF_TERMINATED = True
                     log.error("🧠 ری‌استارت محترمانه به‌خاطر حافظه — SIGTERM به خود پروسه")
                     try:
                         os.kill(os.getpid(), signal.SIGTERM)

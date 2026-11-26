@@ -8,6 +8,8 @@ startCommand = "python run.py"
 # سرویس بالا آمده و دیتابیس سالم است (جلوگیری از حلقهٔ "deploy موفق ولی ربات مرده").
 healthcheckPath = "/health"
 healthcheckTimeout = 120
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 10
+restartPolicyType = "ALWAYS"
+# v5.2: ALWAYS — علت خاموشی دائمی: memguard با SIGTERM خودش را می‌بندد و uvicorn
+# با کد خروج 0 تمیز بسته می‌شود؛ ON_FAILURE یعنی «موفق» و Railway دیگر بالا نمی‌آوردش.
+# ALWAYS در هر خروجی کانتینر را دوباره بالا می‌آورد و سرویس هرگز خاموش نمی‌ماند.
 numReplicas = 1

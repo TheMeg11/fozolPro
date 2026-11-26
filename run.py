@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import sys
 import threading
@@ -186,6 +187,12 @@ def main() -> None:
         except Exception:
             pass
         log.info("shutdown complete")
+        # v5.2: اگر خاموشی به‌خاطر گارد حافظه بود، با کد 1 خارج شو تا Railway
+        # سرویس را ری‌استارت کند. با exit 0 و restartPolicy=ON_FAILURE سرویس
+        # برای همیشه خاموش می‌ماند (علت اصلی قطعی ۲۶ نوامبر).
+        if memguard.SELF_TERMINATED:
+            log.warning("exit(1) به‌خاطر ری‌استارت حافظه‌ای — درخواست بالا آمدن دوباره به Railway")
+            os._exit(1)
 
 
 if __name__ == "__main__":
