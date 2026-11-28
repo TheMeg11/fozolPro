@@ -20,52 +20,52 @@ _bc_lock = threading.Lock()
 
 
 def stats() -> dict:
-    """آمار پنل ادمین — از جداول واقعی ربات (users/clicks/vip) + پرداخت‌های مینی‌اپ."""
-    ts = iso()
-    day_fmt = "%Y-%m-%d %H:%M:%S"  # ستون‌های TIMESTAMP ربات UTC هستند
-    today_s = tehran_day_start(0).strftime(day_fmt)
-    week_s = tehran_day_start(6).strftime(day_fmt)
-    today_local = now().astimezone(TEHRAN).date().isoformat()
-    tday_iso = legacy_bridge.today_tehran().isoformat()
-    month = iso(now() - timedelta(days=30))
+    """آمار پنل ادمین مینی‌اپ.
+
+    v5.4: اعداد اصلی از services.dashboard می‌آیند (همان داشبورد ربات — تقویم تهران، درآمد ربات +
+    مینی‌اپ، فعال ماندگار) و کل داده‌های داشبورد در کلید `dashboard` برگردانده می‌شود.
+    users.created_at به وقت محلی تهران نوشته می‌شود (TZ کانتینر)؛ بقیهٔ ستون‌ها UTC هستند."""
+    from services import dashboard
+
+    d = dashboard.collect()
+    tr = {t["key"]: t for t in d["trends"]}
+    u, v, tp, sy = d.get("users") or {}, d.get("vip") or {}, d.get("traps") or {}, d.get("system") or {}
+    utc_fmt = "%Y-%m-%d %H:%M:%S"
     chart = []
-    for d in range(13, -1, -1):
-        s, e = tehran_day_start(d), tehran_day_start(d) + timedelta(days=1)
-        s_local = now().astimezone(TEHRAN) - timedelta(days=d)
-        chart.append({"date": iso(s), "new_users": db.scalar("SELECT COUNT(*) FROM users WHERE created_at>=? AND created_at<?", (s.strftime(day_fmt), e.strftime(day_fmt)), 0),
-                      "snoops": db.scalar("SELECT COUNT(*) FROM clicks WHERE clicked_at>=? AND clicked_at<?", (s.strftime(day_fmt), e.strftime(day_fmt)), 0),
-                      "anon": db.scalar("SELECT COUNT(*) FROM anon_logs WHERE timestamp>=? AND timestamp<?", (s.strftime(day_fmt), e.strftime(day_fmt)), 0),
-                      "day_local": s_local.date().isoformat()})
+    for k in range(13, -1, -1):
+        s, e = tehran_day_start(k), tehran_day_start(k) + timedelta(days=1)
+        s_loc, e_loc = s.astimezone(TEHRAN).strftime(utc_fmt), e.astimezone(TEHRAN).strftime(utc_fmt)
+        s_utc, e_utc = s.strftime(utc_fmt), e.strftime(utc_fmt)
+        chart.append({"date": iso(s),
+                      "new_users": db.scalar("SELECT COUNT(*) FROM users WHERE created_at>=? AND created_at<?", (s_loc, e_loc), 0),
+                      "snoops": db.scalar("SELECT COUNT(*) FROM clicks WHERE clicked_at>=? AND clicked_at<?", (s_utc, e_utc), 0),
+                      "anon": db.scalar("SELECT COUNT(*) FROM anon_logs WHERE datetime(timestamp)>=? AND datetime(timestamp)<?",
+                                        (s_utc, e_utc), 0),
+                      "day_local": s.astimezone(TEHRAN).date().isoformat()})
+    week_loc = tehran_day_start(6).astimezone(TEHRAN).strftime(utc_fmt)
+    month_loc = tehran_day_start(29).astimezone(TEHRAN).strftime(utc_fmt)
     return {
-        "users_total": db.scalar("SELECT COUNT(*) FROM users"),
-        "users_today": db.scalar("SELECT COUNT(*) FROM users WHERE created_at>=?", (today_s,)),
-        "users_active_today": db.scalar(
-            "SELECT COUNT(*) FROM users WHERE (last_active_date=?) OR (last_seen IS NOT NULL AND last_seen>=?)",
-            (today_local, iso(tehran_day_start(0)))),
-        "users_week": db.scalar("SELECT COUNT(*) FROM users WHERE created_at>=?", (week_s,)),
-        "vip_active": db.scalar(
-            "SELECT COUNT(*) FROM users u LEFT JOIN vip v ON v.user_id=u.user_id "
-            "WHERE (u.vip_until IS NOT NULL AND u.vip_until>?) OR (v.expire_date IS NOT NULL AND v.expire_date>=?)",
-            (ts, legacy_bridge.today_tehran().isoformat())),
-        "revenue_month": db.scalar("SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='paid' AND paid_at>=?", (month,)),
-        "snoops_today": db.scalar("SELECT COUNT(*) FROM clicks WHERE clicked_at>=?", (today_s,)),
-        "anon_today": db.scalar("SELECT COUNT(*) FROM anon_logs WHERE date(timestamp)=date('now')", (), 0),
-        "open_tickets": support.open_count(),
-        "banned": db.scalar("SELECT COUNT(*) FROM users WHERE COALESCE(is_banned,0)=1 OR COALESCE(blocked_by_admin,0)=1"),
+        "users_total": u.get("total", 0),
+        "users_today": tr["new_users"]["today"],
+        "users_active_today": tr["active"]["today"],
+        "users_week": db.scalar("SELECT COUNT(*) FROM users WHERE created_at>=?", (week_loc,)),
+        "vip_active": v.get("active", 0),
+        "revenue_month": v.get("revenue_30d", 0),
+        "snoops_today": tr["clicks"]["today"],
+        "anon_today": tr["anon"]["today"],
+        "open_tickets": sy.get("open_tickets", support.open_count()),
+        "banned": u.get("banned", 0),
         "chart": chart,
-        # ---- v4.3: آمار تفصیلی (هم‌ارز «آمار کاربران / آمار VIP» پنل شیشه‌ای) ----
-        "users_month": db.scalar("SELECT COUNT(*) FROM users WHERE created_at>=?", (iso(now() - timedelta(days=30)),)),
-        "users_week_active": db.scalar("SELECT COUNT(*) FROM users WHERE last_seen IS NOT NULL AND last_seen>=?", (week_s,)),
-        "vip_expiring_7d": db.scalar(
-            "SELECT COUNT(*) FROM users u LEFT JOIN vip v ON v.user_id=u.user_id WHERE "
-            "(u.vip_until IS NOT NULL AND u.vip_until>? AND u.vip_until<=?) OR (v.expire_date IS NOT NULL AND v.expire_date>=? AND v.expire_date<=?)",
-            (ts, iso(now() + timedelta(days=7)), tday_iso, (now().astimezone(TEHRAN).date() + timedelta(days=7)).isoformat())),
-        "vip_revenue_total": db.scalar("SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='paid'"),
-        "vip_ever": db.scalar("SELECT COUNT(DISTINCT user_id) FROM transactions WHERE type IN ('vip','purchase')"),
-        "traps_total": db.scalar("SELECT COUNT(*) FROM traps"),
-        "anon_total": db.scalar("SELECT COUNT(*) FROM anon_logs", (), 0),
-        "spins_total": db.scalar("SELECT COUNT(*) FROM wheel_spins", (), 0),
+        "users_month": db.scalar("SELECT COUNT(*) FROM users WHERE created_at>=?", (month_loc,)),
+        "users_week_active": u.get("wau", 0),
+        "vip_expiring_7d": v.get("expiring_7d", 0),
+        "vip_revenue_total": v.get("revenue_total", 0),
+        "vip_ever": v.get("buyers", 0),
+        "traps_total": tp.get("traps_total", 0),
+        "anon_total": tp.get("anon_30d", 0),
+        "spins_total": tp.get("spins_total", 0),
         "challenge_status": challenge_view(),
+        "dashboard": d,
     }
 
 

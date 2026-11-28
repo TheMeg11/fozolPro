@@ -142,6 +142,14 @@ def _loop() -> None:
                 if over_hard >= 2:
                     global SELF_TERMINATED
                     SELF_TERMINATED = True
+                    # v5.4: ثبت ماندگار «ری‌استارت حافظه‌ای» برای داشبورد (قبل از خاموشی)
+                    try:
+                        from services import metrics as _mx
+
+                        _mx.bump("memrestart")
+                        _mx.flush()
+                    except Exception:
+                        pass
                     log.error("🧠 ری‌استارت محترمانه به‌خاطر حافظه — SIGTERM به خود پروسه")
                     try:
                         os.kill(os.getpid(), signal.SIGTERM)

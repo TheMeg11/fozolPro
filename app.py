@@ -30,7 +30,7 @@ import settings
 from auth import InitDataError, validate_init_data
 from services import admin as admin_svc
 from services import anon as anon_svc
-from services import avatars, bale_api, bot_settings, channels, db, missions, rewards, snoop, support, users, vip, wheel
+from services import avatars, bale_api, bot_settings, channels, db, metrics, missions, rewards, snoop, support, users, vip, wheel
 from services import profile as profile_svc
 from services.common import AppError
 
@@ -113,6 +113,8 @@ def current_user(request: Request) -> dict:
     u = data["user"]
     limiter.check(f"u:{u['id']}")
     row = users.ensure_user(u)
+    if not settings.is_admin(u["id"]):  # v5.4: «کاربر فعال» داشبورد شامل کاربران مینی‌اپ هم بشود
+        metrics.hit(u["id"], count_request=False)
     if row.get("is_banned"):
         raise AppError("BANNED", "حساب شما مسدود شده است. با پشتیبانی تماس بگیرید.", 403)
     return row

@@ -157,6 +157,11 @@ def main() -> None:
 
     memguard.start()
 
+    # v5.4: نمونه‌برداری رم/CPU + شمارنده‌های ماندگار داشبورد + (اختیاری) API رسمی Railway
+    from services import server_stats
+
+    server_stats.start()
+
     bot, legacy = load_bot()
     webhook_url = f"{settings.WEBHOOK_URL}/bale/webhook/{settings.WEBHOOK_SECRET}" if (
         settings.WEBHOOK_URL and settings.WEBHOOK_SECRET) else ""
@@ -194,6 +199,12 @@ def main() -> None:
                 bot.stop_polling()
             except Exception:
                 pass
+        try:
+            from services import metrics
+
+            metrics.flush()  # v5.4: آمار دقیقهٔ آخر قبل از بستن دیتابیس
+        except Exception:
+            pass
         try:
             db.close_all()
         except Exception:

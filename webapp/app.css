@@ -1195,3 +1195,15 @@ body.is-vip .hero .progress > i { background: linear-gradient(90deg, var(--gold-
 @media (prefers-reduced-motion: reduce) { .ptr.spin .ic { animation: none; } }
 /* v5.3 (D3): دکمهٔ مشغول */
 button[aria-busy="true"] { cursor: progress; }
+
+/* v5.4: داشبورد «روند و مقایسه» ادمین — جدول ۴ستونه (شاخص | امروز | دیروز | م۷) */
+.trend { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1.15fr) minmax(0, .8fr) minmax(0, .85fr); font-size: 12.5px; }
+.trend > div { padding: 9px 3px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.trend > .th { border-top: 0; padding-top: 2px; color: var(--hint); font-size: 11px; font-weight: 800; }
+.trend .lbl { font-weight: 600; color: var(--text); line-height: 1.35; }
+.trend .lbl .emo { flex: none; }
+.trend .now { flex-wrap: wrap; }
+.trend .now b { font-size: 14px; font-weight: 800; }
+.trend .dl { font-size: 10.5px; font-weight: 800; padding: 1px 5px; border-radius: 7px; background: var(--surface-3); color: var(--hint); white-space: nowrap; }
+.trend .dl.good { background: var(--accent-soft); color: var(--accent); }
+.trend .dl.bad { background: var(--danger-soft); color: var(--danger); }

@@ -58,6 +58,12 @@ class _ErrorCounter(logging.Handler):
         self.last_at = None
 
     def emit(self, record):
+        # v5.4: شمارش ماندگار ساعتی خطاها برای ردیف «خطای ربات» داشبورد (فقط حافظه — بدون I/O)
+        try:
+            from services import metrics as _mx
+            _mx.bump("err")
+        except Exception:
+            pass
         with self._lock:
             self.count += 1
             try:
@@ -523,9 +529,6 @@ for _days in VIP_PRICES.keys():
 CHANNELS = []
 channel_info = {}
 broken_channels = set()  # کانال‌هایی که ربات نمی‌تواند اعضایشان را بررسی کند (v4.7 — قبل از load)
-# v4.7: تزریق به bot_db برای گزارش روزانه (get_full_daily_report_data)
-import bot_db as _bot_db_mod
-_bot_db_mod.broken_channels = broken_channels
 
 # کلید خاموش/روشن عضویت اجباری — از Environment Variable
 # FORCE_JOIN_ENABLED=0 یا false → عضویت اجباری کاملاً غیرفعال
@@ -781,6 +784,7 @@ def reg_anon(sender, receiver):
 
 # ====== v5.3: دکمه‌های پیام ناشناس با توکن مات (بدون شناسهٔ عددی فرستنده) ======
 from services import anon_refs as _anon_refs  # noqa: E402
+from services import metrics as _metrics  # noqa: E402 — v5.4: شمارنده‌های ماندگار داشبورد
 
 
 def _anon_markup(owner_id, target_id, blocked=False):
@@ -1153,6 +1157,11 @@ def record_message(user_id: int = None):
             _month_requests.increment()
     except Exception:
         pass
+    # v5.4: فعال روزانه + درخواست ساعتی ماندگار (services.metrics) — با ری‌استارت صفر نمی‌شود
+    try:
+        _metrics.hit(user_id)
+    except Exception:
+        pass
     now = time.time()
     with msg_lock:
         msg_times.append(now)
@@ -1210,7 +1219,7 @@ def _button_display_name(callback_data):
 import bot_backups as _bot_backups  # v4.7 استخراج از main.py — ماژول bot_backups
 _bot_backups._bind(globals())  # تزریق اشیاء ربات (bot/db/texts/...)
 from bot_backups import (  # noqa: F401 — نام‌های منتقل‌شده به ماژول
-    build_daily_report_text, daily_report_loop, _make_db_backup_snapshot, _fmt_size,
+    _make_db_backup_snapshot, _fmt_size,
     _gzip_db_file, _send_document_with_retry, _next_backup_target, VACUUM_INTERVAL_DAYS,
     _vacuum_due, _maintenance_before_backup, _snapshot_health_and_users, nightly_backup_loop,
     _restore_pending_lock, _restore_pending
@@ -2173,6 +2182,11 @@ def _run_broadcast_async_impl(admin_chat_id, preview_msg, resume_state=None, mar
             db.conn.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                 ("last_broadcast_stats", f"{sent_cnt}/{total} ({success_rate}%)")
+            )
+            # v5.4: زمان پخش برای نمایش در داشبورد
+            db.conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                ("last_broadcast_at", str(int(time.time())))
             )
             db.conn.commit()
     except: pass
@@ -8145,160 +8159,24 @@ def _callback_handler_impl(call):
                     reply_markup=cancel_markup())
                 return
             if data == "admin_daily":
+                # v5.4: داشبورد «روند و مقایسه» — محاسبه در services.dashboard (مشترک با مینی‌اپ)؛
+                # «بروزرسانی» کش را تا ۱۰ ثانیه می‌پذیرد، باز کردن عادی تا ۶۰ ثانیه.
                 if user_id != ADMIN_ID:
                     bot.answer_callback_query(call.id, "⛔")
                     return
+                bot.answer_callback_query(call.id, "⏳ در حال محاسبه…")
                 try:
-                    expiring_vip_count = len(db.get_expiring_vips(0)) + len(db.get_expiring_vips(1))
-                except Exception:
-                    expiring_vip_count = 0
-                # v3.23: آمار سنگین با کش ۶۰ ثانیه‌ای — پنل روی ۵۰۰۰+ کاربر دیگر دیتابیس را قفل نمی‌کند
-                s, s_ts = db.get_daily_stats_cached()
-
-                all_codes = db.get_all_gift_codes()
-                active_codes_count = len([c for c in all_codes if c['used_count'] < c['max_uses']])
-                broken_list = ', '.join(broken_channels) if broken_channels else 'ندارد'
-
-                # محاسبهٔ کاربران جدید فعال‌شده امروز (کاربرانی که امروز کلیک داده‌اند و ایجادشده امروز هستند)
-                # این برای نمایش "کاربران جدیدِ فعال‌شده امروز"
-                # ساده‌سازی: تعداد کاربرانی که امروز created_at دارند و در clicks امروز حضور دارند
-                # اما چون پیاده‌سازی کامل‌اش سنگین است، همان new_today استفاده می‌کنیم (تقریبی)
-
-                # ۵ تلهٔ برتر امروز (بر اساس فضول — مخفی اگر صفر) — v3.23: با کش
-                today = datetime.date.today().isoformat()
-                def _q_top_traps_today():
-                    try:
-                        return db.conn.execute(
-                            "SELECT c.owner_id, u.first_name, COUNT(DISTINCT c.clicker_id) as c FROM clicks c "
-                            "JOIN users u ON c.owner_id=u.user_id WHERE date(c.clicked_at)=? "
-                            "GROUP BY c.owner_id ORDER BY c DESC LIMIT 5", (today,)).fetchall()
-                    except Exception:
-                        return []
-                top_distinct_rows, _tt_ts = db._cached_stat("top_traps_today", 60.0, _q_top_traps_today)
-                top_rank_icons = ['🥇', '🥈', '🥉', '🏅', '🎖️']
-
-                # محاسبه آخرین پخش همگانی
-                last_bc = db.conn.execute(
-                    "SELECT value FROM settings WHERE key='last_broadcast_stats'").fetchone()
-                last_bc_str = last_bc['value'] if last_bc else "ندارد"
-
-                # بخش ۵ تلهٔ برتر — فقط اگر حداقل یک فضول امروز ثبت شده باشد
-                top_section = ""
-                if top_distinct_rows:
-                    top_section = (
-                        f"🏆 ۵ تلهٔ برتر امروز (بر اساس فضول):\n"
-                        + "\n".join(
-                            f"{top_rank_icons[i]} {escape_md(crown_name(sanitize_name(r['first_name'] or 'بی‌نام'), db.is_vip(r['owner_id'])))} (id{to_persian_digits(r['owner_id'])}) — {to_persian_digits(r['c'])} فضول"
-                            for i, r in enumerate(top_distinct_rows)
-                        )
-                        + f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    )
-
-                # v3.5: وضعیت چالش (خط شرطی) — v3.18: نام جدید — v4.6: جایزهٔ vip یا پاکت
-                _ch_st = get_challenge_status()
-                if _ch_st == "scheduled":
-                    _ch_prizes = _challenge_prize_dict(db.get_setting_int("challenge_reward_days", 3))
-                    challenge_line = (
-                        f"🏆 چالش فضول‌گیری: فردا از ساعت ۰۰:۰۰ اجرا می‌شه\n"
-                        f" (جوایز: 🥇 {_ch_prizes['first_prize']} | 🥈 {_ch_prizes['second_prize']} | 🥉 {_ch_prizes['third_prize']})\n"
-                    )
-                elif _ch_st == "active":
-                    challenge_line = f"🏆 چالش فضول‌گیری: در جریان — تا پایان شمارش: {_challenge_remaining_str()}\n"
-                else:
-                    challenge_line = ""
-
-                # ── v3.21: داده‌های جدید داشبورد ──
-                joins_today = db.get_channel_joins_today()
-                err_count, err_last = ERROR_COUNTER.snapshot()
-                if err_count:
-                    err_line = f"🧯 مشکلات ربات: {to_persian_digits(err_count)} خطا (آخرین: {escape_md(err_last[:60])})\n"
-                else:
-                    err_line = "🧯 مشکلات ربات: ندارد ✅\n"
-                month_reqs = 0
-                try:
-                    if _month_requests:
-                        month_reqs = _month_requests.current()
-                except Exception:
-                    month_reqs = 0
-                with _requested_lock:
-                    requested_total = len(_requested_users)
-                try:
-                    _top_cb = db.get_callback_stats(limit=1)
-                    top_cb_line = ""
-                    if _top_cb:
-                        top_cb_line = (
-                            f"🖱️ پرکلیک‌ترین دکمه: «{_button_display_name(_top_cb[0]['callback_data'])}» "
-                            f"({to_persian_int(_top_cb[0]['click_count'])} کلیک)\n"
-                        )
-                except Exception:
-                    top_cb_line = ""
-                try:
-                    (_st_active, _st_best), _ = db.get_bonus_streak_stats_cached()
-                except Exception:
-                    _st_active, _st_best = 0, 0
-
-                text = (
-                    f"📊 داشبورد ربات فضول‌گیر\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"🎯 شکار و تله‌ها\n"
-                    f"🔹 کلیک امروز: {to_persian_digits(s['clicks_today'])} | کل: {to_persian_int(s['total_clicks'])}\n"
-                    f"👑 فضول: {to_persian_int(s['distinct_clickers'])} | صاحبان تله: {to_persian_int(s['trap_owners'])}\n"
-                    f"📊 میانگین ۷ روز: {to_persian_digits(s['avg_7'])} کلیک/روز\n"
-                    + challenge_line
-                    + "\n"
-                    + top_section
-                    + f"🏅 VIP و درآمد\n"
-                    f"🔹 فعال: {to_persian_digits(s['active_vip'])} | ⏳ در شرف انقضا: {to_persian_digits(expiring_vip_count)}\n"
-                    f"💰 امروز: {fmt_amount_rial(s['revenue_today'])} ({to_persian_digits(s['tx_today'])} تراکنش)\n"
-                    f"💰 کل: {fmt_amount_rial(s['total_revenue'])} ({to_persian_digits(s['tx_total'])} تراکنش)\n"
-                    f"🔓 پروفایل بازشده: {to_persian_digits(s['reveals_total'])} بار | درآمد: {fmt_amount_rial(s['reveal_revenue'])}\n\n"
-                    f"🎁 کد هدیه: ساخته {to_persian_digits(s['gift_created'])} | استفاده {to_persian_digits(s['gift_used'])} | فعال {to_persian_digits(active_codes_count)}\n"
-                    f"💬 پیام ناشناس: {to_persian_int(s['anon_total'])}\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"⚙️ سیستم و عملکرد\n"
-                    f"📢 جوین اجباری: {to_persian_digits(s['channels_count'])} عدد | عضویت: {to_persian_int(s['total_joins'])} | امروز: {to_persian_digits(joins_today)}\n"
-                    f"⚠️ مشکل‌دار: {escape_md(broken_list)}\n"
-                    f"🛡️ مسدود ادمین: {to_persian_digits(s['total_banned'])} | بلاک‌کردن ربات: {to_persian_digits(s['blocked_bot_count'])}\n"
-                    f"⏱️ آپ‌تایم: {uptime_str()}\n"
-                    f"📨 درخواست‌های ۲۴ ساعت پیش: {to_persian_digits(get_messages_24h())}\n"
-                    f"🗓 درخواست‌های این ماه (شمسی): {to_persian_digits(month_reqs)}\n"
-                    + top_cb_line
-                    + f"🧑‍💻 کاربران با حداقل یک درخواست: {to_persian_digits(requested_total)} نفر\n"
-                    f"📢 آخرین پخش همگانی: {escape_md(last_bc_str)}\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"👥 کاربران و رشد\n"
-                    f"🔹 کل: {to_persian_int(s['total_users'])}\n"
-                    f"🆕 جدید امروز: +{to_persian_digits(s['new_today'])} | دیروز: +{to_persian_digits(s['new_yesterday'])}\n"
-                    f"🔹 فعال ۲۴ساعت: {to_persian_digits(s['active_today'])} | نرخ بازگشت: {to_persian_digits(s['return_rate'])}\n"
-                    f"✨ جدیدِ فعال‌شدهٔ امروز: {to_persian_digits(s['new_activated_today'])} نفر\n"
-                    f"🔥 استریک فعال: {to_persian_digits(_st_active)} نفر | رکورد: {to_persian_digits(_st_best)} روز\n"
-                    f"📥 ورود کاربران — بدون پارامتر: {to_persian_int(s['organic'])} | خوش‌آمد: {to_persian_int(s['welcome'])} | تله: {to_persian_int(s['referral'])}\n"
-                    + err_line +
-                    f"\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🔄 بروزرسانی آمار: {shamsi_date(datetime.datetime.fromtimestamp(s_ts, TEHRAN_TZ), with_time=True)} (کش ۶۰ ثانیه‌ای)"
-                )
-
-                markup = types.InlineKeyboardMarkup().add(
+                    from services import dashboard as _dash
+                    text = _dash.bot_text(_dash.collect(max_age=10.0))
+                except Exception as _d_err:
+                    logger.error(f"admin dashboard error: {_d_err}")
+                    text = f"❌ خطا در ساخت داشبورد: {escape_md(str(_d_err)[:120])}"
+                markup = types.InlineKeyboardMarkup(row_width=2).add(
                     types.InlineKeyboardButton("🔄 بروزرسانی", callback_data="admin_daily"),
                     types.InlineKeyboardButton("📊 آرشیو روزانه", callback_data="admin_daily_archive"),
-                    types.InlineKeyboardButton("🌙 گزارش روزانه", callback_data="admin_test_daily_report"),
-                    types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_panel")
                 )
+                markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_panel"))
                 safe_edit_text(text, chat_id, call.message.message_id, reply_markup=markup)
-                bot.answer_callback_query(call.id)
-                return
-
-            # دکمه تست گزارش روزانه (برای ادمین)
-            if data == "admin_test_daily_report":
-                if user_id != ADMIN_ID:
-                    bot.answer_callback_query(call.id, "⛔")
-                    return
-                try:
-                    text = build_daily_report_text()
-                    bot.send_message(chat_id, text)
-                except Exception as e:
-                    bot.send_message(chat_id, f"❌ خطا در ساخت گزارش: {e}")
-                bot.answer_callback_query(call.id)
                 return
 
             # ----- آرشیو روزانه — کاربران جدید در هر روز (v3.5: نمودار + خلاصه) -----
@@ -10584,7 +10462,6 @@ threading.Thread(target=periodic_cleanup, daemon=True).start()
 threading.Thread(target=clean_logs_periodically, daemon=True).start()
 threading.Thread(target=remind_vip_expiry, daemon=True).start()
 threading.Thread(target=broadcast_timeout_watcher, daemon=True).start()
-threading.Thread(target=daily_report_loop, daemon=True).start()
 threading.Thread(target=remind_inactive_users, daemon=True).start()
 threading.Thread(target=nightly_backup_loop, daemon=True).start()
 threading.Thread(target=challenge_loop, daemon=True).start()
@@ -10604,6 +10481,33 @@ def uptime_str():
     hours, rem = divmod(rem, 3600)
     minutes = rem // 60
     return f"{to_persian_digits(days)} روز و {to_persian_digits(hours)} ساعت و {to_persian_digits(minutes)} دقیقه"
+def _dashboard_runtime():
+    """v5.4: داده‌های زمان‌اجرای ربات برای services.dashboard (پنل ربات + مینی‌اپ)."""
+    err_count, err_last = ERROR_COUNTER.snapshot()
+    out = {"err_total": err_count, "err_last": err_last,
+           "broken_channels": sorted(str(c) for c in broken_channels)}
+    with _requested_lock:
+        out["requested_total"] = len(_requested_users)
+    try:
+        out["month_requests"] = _month_requests.current() if _month_requests else None
+    except Exception:
+        out["month_requests"] = None
+    try:
+        _top = db.get_callback_stats(limit=1)
+        if _top:
+            out["top_button"] = {"label": _button_display_name(_top[0]["callback_data"]),
+                                 "count": _top[0]["click_count"]}
+    except Exception:
+        pass
+    return out
+
+
+try:
+    from services import dashboard as _dashboard_mod
+    _dashboard_mod.set_runtime(_dashboard_runtime)
+except Exception as _dr_err:
+    logger.warning(f"dashboard runtime register failed: {_dr_err}")
+
 def print_startup_metrics():
     """خلاصهٔ تحلیلی استارتاپ — چاپ در لاگ برای پایش رشد/نگهداشت/درآمد."""
     try:

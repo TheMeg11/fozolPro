@@ -462,6 +462,21 @@ SCHEMA = [
         target_id INTEGER NOT NULL,
         created_at TEXT
     )""",
+    # --- v5.4: داشبورد — کاربران فعال هر روز (به وقت تهران) با زمان اولین فعالیت ---
+    # برای «فعال امروز/دیروز/میانگین ۷ روز» و «دیروز تا همین ساعت»؛ با ری‌استارت پاک نمی‌شود.
+    """CREATE TABLE IF NOT EXISTS daily_active (
+        day TEXT NOT NULL, user_id INTEGER NOT NULL, ts INTEGER NOT NULL,
+        PRIMARY KEY(day, user_id)
+    ) WITHOUT ROWID""",
+    # --- v5.4: شمارنده‌های ساعتی ماندگار (درخواست‌ها، خطاها، ری‌استارت‌ها) — bucket = 'YYYY-MM-DD HH' تهران ---
+    """CREATE TABLE IF NOT EXISTS stat_counters (
+        bucket TEXT NOT NULL, key TEXT NOT NULL, value INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(bucket, key)
+    ) WITHOUT ROWID""",
+    # --- v5.4: نمونه‌های دقیقه‌ای رم/CPU سرور (برای کمینه/میانگین/بیشینه و هزینه) ---
+    """CREATE TABLE IF NOT EXISTS server_samples (
+        ts INTEGER PRIMARY KEY, mem_mb REAL, cpu REAL
+    ) WITHOUT ROWID""",
 ]
 
 # ستون‌هایی که ممکن است در جدول users فعلی main.py نباشند (افزایشی و امن)
@@ -491,6 +506,8 @@ USER_COLUMNS = {
     "trial_given": "INTEGER DEFAULT 0",
     # v5.1: وضعیت «کاربر ربات را بلاک کرده» — پخش/اعلان‌ها دوباره سراغش نروند
     "blocked_bot": "INTEGER DEFAULT 0",
+    # v5.4: «حداقل یک درخواست» (ربات) — داشبورد در حالت API-only هم بخواندش
+    "requested": "INTEGER DEFAULT 0",
 }
 
 
