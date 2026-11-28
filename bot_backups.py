@@ -1,6 +1,6 @@
-"""bot_backups.py — گزارش روزانهٔ ادمین و بکاپ شبانه (استخراج‌شده از main.py — v4.7).
+"""bot_backups.py — بکاپ شبانه (استخراج‌شده از main.py — v4.7).
 
-build_daily_report_text / daily_report_loop و زنجیرهٔ بکاپ شبانه + snapshot.
+زنجیرهٔ بکاپ شبانه + snapshot. (v5.4: گزارش روزانهٔ ادمین حذف شد.)
 اشیاء ربات از طریق _bind(globals()) تزریق می‌شوند."""
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import tempfile
 
 logger = logging.getLogger("bot_backups")
 # ─── اشیاء تزریق‌شده از main.py در زمان import (الگوی bind — کد منتقل‌شده دست‌نخورده) ───
-_BIND_KEYS = ['bot', 'db', 'texts', 'types', 'logger', 'ADMIN_ID', 'TEHRAN_TZ', 'to_persian_digits', 'to_persian_int', 'shamsi_today_str', 'shamsi_date', 'jdatetime', 'get_messages_24h', 'BASE_DIR', 'DB_PATH', 'Path', 'sqlite3', 'pct_change', 'sanitize_name', 'crown_name', 'escape_md', 'fmt_amount_rial', 'uptime_str']
+_BIND_KEYS = ['bot', 'db', 'texts', 'types', 'logger', 'ADMIN_ID', 'TEHRAN_TZ', 'to_persian_digits', 'to_persian_int', 'shamsi_date', 'jdatetime', 'BASE_DIR', 'DB_PATH', 'Path', 'sqlite3']
 
 
 def _bind(ns: dict) -> None:
@@ -26,129 +26,7 @@ def _bind(ns: dict) -> None:
             globals()[_k] = ns[_k]
 
 
-# ====== گزارش روزانه ساعت ۲۳:۰۰ به وقت تهران ======
-# (TEHRAN_TZ از bot_db import می‌شود — v4.7)
-
-def build_daily_report_text():
-    """ساخت متن گزارش روزانه برای ادمین. قالب دقیقاً مطابق نمونهٔ کاربر."""
-    s = db.get_full_daily_report_data()
-    today_str = shamsi_today_str()
-    uptime = uptime_str()
-
-    # مقایسه با دیروز
-    new_sign, new_pct = pct_change(s['new_today'], s['new_yesterday'])
-    clicks_sign, clicks_pct = pct_change(s['clicks_today'], s['clicks_yesterday'])
-    rev_sign, rev_pct = pct_change(s['revenue_today'], s['revenue_yesterday'])
-
-    # بیشترین فضول‌های امروز (بر اساس فضول — تا ۵ نفر)
-    top_lines = []
-    medals = ['🥇', '🥈', '🥉', '🏅', '🎖️']
-    for i, t in enumerate(s['top_today'][:5]):
-        name = sanitize_name(t['first_name'] or "بی‌نام")
-        try:
-            _t_vip = db.is_vip(t['owner_id'])
-        except Exception:
-            _t_vip = False
-        top_lines.append(f"{medals[i]} {escape_md(crown_name(name, _t_vip))} — {to_persian_digits(t['c'])} فضول")
-
-    # VIPهای جدید امروز
-    vip_new_lines = []
-    for uid in s['new_vip_today'][:5]:
-        u = db.get_user_basic(uid)
-        nm = u['first_name'] if u and u['first_name'] else str(uid)
-        vip_new_lines.append(f"🏅 VIP جدید: {escape_md(nm)}")
-
-    # هشدارها
-    warnings_lines = []
-    if s['broken_channels']:
-        warnings_lines.append(f"• {to_persian_digits(len(s['broken_channels']))} کانال اجباری مشکل‌دار ({', '.join(s['broken_channels'][:3])})")
-    if s['expiring_vips']:
-        warnings_lines.append(f"• {to_persian_digits(len(s['expiring_vips']))} VIP در شرف انقضا (امروز/فردا)")
-    if s['total_banned'] > 0:
-        warnings_lines.append(f"• {to_persian_digits(s['total_banned'])} کاربر مسدود شد")
-    if s['blocked_bot_count'] > 0:
-        warnings_lines.append(f"• {to_persian_digits(s['blocked_bot_count'])} کاربر ربات را بلاک کرده‌اند")
-    if not warnings_lines:
-        warnings_lines.append("• همه‌چیز رو به راه است ✅")
-
-    # پیشنهادها
-    suggestions_lines = []
-    if s['active_vip'] > 0 and s['new_today'] > 0 and s['new_vip_today']:
-        vip_conv = len(s['new_vip_today']) * 100 / max(s['active_vip'], 1)
-        suggestions_lines.append(f"• نرخ تبدیل اشتراک ویژه: {to_persian_digits(int(vip_conv))}٪ (هدف ۵٪)")
-    suggestions_lines.append(f"• موجودی کد هدیه: {to_persian_digits(s['active_gift_codes'])} کد فعال")
-    if s['last_broadcast']:
-        suggestions_lines.append(f"• آخرین پخش همگانی: {s['last_broadcast']}")
-
-    text = (
-        f"🌙 گزارش روزانه — {today_str}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 خلاصه امروز\n"
-        f"👥 کاربران جدید: +{to_persian_digits(s['new_today'])} | فعال امروز: {to_persian_digits(s['active_today'])}\n"
-        f"👣 کلیک: {to_persian_digits(s['clicks_today'])} | 👑 فضول: {to_persian_digits(s['distinct_today'])}\n"
-        f"📂 صاحبان تلهٔ جدید: {to_persian_digits(s['new_trap_owners'])}\n"
-        f"💬 پیام ناشناس: {to_persian_digits(s['anon_today'])}\n"
-        f"💰 درآمد: {fmt_amount_rial(s['revenue_today'])} ({to_persian_digits(s['tx_today'])} تراکنش)\n\n"
-        f"📈 مقایسه با دیروز\n"
-        f"• کاربران جدید: {new_sign}{new_pct}٪\n"
-        f"• کلیک‌ها: {clicks_sign}{clicks_pct}٪\n"
-        f"• درآمد: {rev_sign}{rev_pct}٪\n\n"
-        + (f"🏆 بیشترین فضول امروز\n" + "\n".join(top_lines) + "\n" if top_lines else "")
-        + ("\n".join(vip_new_lines) + "\n" if vip_new_lines else "")
-        + f"🎁 کد هدیه استفاده‌شده: {to_persian_digits(s['gift_used_today'])} بار\n\n"
-        f"⚠️ هشدارها\n"
-        + "\n".join(warnings_lines) + "\n\n"
-        f"💡 پیشنهادها\n"
-        + "\n".join(suggestions_lines) + "\n\n"
-        f"⏱️ وضعیت ربات\n"
-        f"• آپ‌تایم: {uptime}\n"
-        f"• پیام‌های ۲۴h: {to_persian_digits(get_messages_24h())}\n"
-        + (f"• آخرین پخش همگانی: {s['last_broadcast']}\n" if s['last_broadcast'] else "")
-        + f"\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🕚 ارسال خودکار ساعت ۲۳:۰۰"
-    )
-
-    # افزودن بخش پراستفاده‌ترین دکمه‌ها
-    try:
-        top_callbacks = db.get_callback_stats(limit=5)
-        if top_callbacks:
-            text += "\n\n📱 *پراستفاده‌ترین دکمه‌ها:*\n"
-            for cb in top_callbacks:
-                text += f"• {cb['callback_data']}: {to_persian_int(cb['click_count'])} کلیک\n"
-    except: pass
-
-    return text
-
-def daily_report_loop():
-    """Thread که هر روز ساعت ۲۳:۰۰ تهران گزارش روزانه را به ادمین می‌فرستد."""
-    while True:
-        try:
-            now_tehran = datetime.datetime.now(TEHRAN_TZ)
-            # محاسبهٔ زمان بعدی ۲۳:۰۰ تهران
-            target = now_tehran.replace(hour=23, minute=0, second=0, microsecond=0)
-            if now_tehran >= target:
-                target = target + datetime.timedelta(days=1)
-            wait_seconds = (target - now_tehran).total_seconds()
-            time.sleep(wait_seconds)
-
-            # جلوگیری از ارسال دوبل اگر restart شده باشیم
-            today_str = shamsi_today_str()
-            last_report = db.get_last_daily_report_date()
-            if last_report == today_str:
-                # امروز فرستاده شده؛ صبر کن تا فردا
-                time.sleep(60)
-                continue
-
-            try:
-                report_text = build_daily_report_text()
-                bot.send_message(ADMIN_ID, report_text)
-                db.set_last_daily_report_date(today_str)
-                logger.info("📊 Daily report sent to admin.")
-            except Exception as e:
-                logger.error(f"Daily report send error: {e}")
-        except Exception as e:
-            logger.error(f"Daily report loop error: {e}")
-            time.sleep(60)
+# v5.4: «گزارش روزانهٔ ساعت ۲۳» به درخواست ادمین حذف شد — همهٔ آمار در داشبورد (services/dashboard.py).
 
 # ====== بکاپ شبانه دیتابیس (هر شب ساعت ۰۳:۳۰ بامداد به وقت ایران — خلوت‌ترین ساعت) ======
 def _make_db_backup_snapshot(dest_path):
@@ -319,4 +197,4 @@ _restore_pending = False
 
 
 
-__all__ = ['build_daily_report_text', 'daily_report_loop', '_make_db_backup_snapshot', '_fmt_size', '_gzip_db_file', '_send_document_with_retry', '_next_backup_target', 'VACUUM_INTERVAL_DAYS', '_vacuum_due', '_maintenance_before_backup', '_snapshot_health_and_users', 'nightly_backup_loop', '_restore_pending_lock', '_restore_pending']
+__all__ = ['_make_db_backup_snapshot', '_fmt_size', '_gzip_db_file', '_send_document_with_retry', '_next_backup_target', 'VACUUM_INTERVAL_DAYS', '_vacuum_due', '_maintenance_before_backup', '_snapshot_health_and_users', 'nightly_backup_loop', '_restore_pending_lock', '_restore_pending']

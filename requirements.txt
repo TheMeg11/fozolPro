@@ -1,9 +1,13 @@
-pyTelegramBotAPI>=4.14,<5
-requests>=2.31
-jdatetime>=4.1
-Pillow>=10,<13
-fonttools>=4,<5
-anyascii>=0.3,<1
-imageio-ffmpeg>=0.4,<2
-fastapi>=0.110,<1.0
-uvicorn>=0.29,<1.0
+# v5.3: نسخه‌ها دقیق پین شدند (بیلدهای تکرارپذیر؛ آپدیت ناخواسته در دیپلوی بعدی چیزی را نمی‌شکند).
+# برای ارتقا: نسخه را عوض کنید، محلی تست کنید، بعد دیپلوی.
+pyTelegramBotAPI==4.37.1
+requests==2.34.2
+jdatetime==6.1.1
+Pillow==12.3.0
+fonttools==4.69.1
+anyascii==0.3.3
+imageio-ffmpeg==0.8.2
+fastapi==0.165.0
+starlette==1.10.0
+pydantic==2.14.4
+uvicorn==0.55.0

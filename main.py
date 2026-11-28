@@ -5,9 +5,8 @@ from collections import defaultdict, deque
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
-# اضافه کردن مسیر site-packages کاربر برای دسترسی به jdatetime
+# v5.3: هک sys.path ('/home/z/...') حذف شد — jdatetime از requirements نصب می‌شود
 try:
-    sys.path.insert(0, '/home/z/.local/lib/python3.13/site-packages')
     import jdatetime
     JDATE_OK = True
 except ImportError:
@@ -42,7 +41,9 @@ except Exception as _wv_err:
     print("⚠️ wheel_video بارگذاری نشد — چرخ شانس با GIF قبلی:", _wv_err)
 
 # ====== لاگ‌گیری پایه ======
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# v5.3: basicConfig دوم حذف شد — run.py لاگ را پیکربندی می‌کند (فقط اگر هنوز هندلری نیست)
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # ====== v3.21: شمارندهٔ خطاها — «مشکلات ربات» در آمار کل ======
@@ -57,6 +58,12 @@ class _ErrorCounter(logging.Handler):
         self.last_at = None
 
     def emit(self, record):
+        # v5.4: شمارش ماندگار ساعتی خطاها برای ردیف «خطای ربات» داشبورد (فقط حافظه — بدون I/O)
+        try:
+            from services import metrics as _mx
+            _mx.bump("err")
+        except Exception:
+            pass
         with self._lock:
             self.count += 1
             try:
@@ -140,7 +147,7 @@ if not TOKEN or TOKEN == "TOKEN_ROBAT_RA_INJA_BENAVISID":
     exit(1)
 
 if not ADMIN_ID:
-    print("⚠️ ADMIN_ID ست نشده — حالت تست فعال می‌شود. اولین کاربر که /start بزنه خودکار ادمین می‌شود.")
+    print("⚠️ ADMIN_ID ست نشده — پنل ادمین غیرفعال است مگر ALLOW_AUTO_ADMIN=1 (فقط محیط تست).")
 
 apihelper.API_URL = "https://tapi.bale.ai/bot{0}/{1}"
 # ====== v3.23: timeout و retry سراسری — پایداری شبکه در مقیاس ۵۰۰۰+ کاربر ======
@@ -470,10 +477,17 @@ db = Database(str(DB_PATH))
 # ====== Auto-Admin (TEST MODE) ======
 # وقتی ADMIN_ID از env ست نشده (==0)، اولین کاربری که /start بزنه به‌صورت خودکار ادمین میشه.
 # این فقط برای تست/دیباگ هست و در محیط production حتماً باید ADMIN_ID در env ست شده باشه.
+# v5.3 (امنیت): فقط با ALLOW_AUTO_ADMIN=1 فعال است. قبلاً اگر ADMIN_ID روی Railway به‌اشتباه
+# خالی می‌ماند، «اولین غریبه‌ای» که /start می‌زد برای همیشه ادمین کامل ربات می‌شد.
+_AUTO_ADMIN_ALLOWED = (os.environ.get("ALLOW_AUTO_ADMIN") or "").strip().lower() in ("1", "true", "yes", "on")
+if ADMIN_ID == 0 and not _AUTO_ADMIN_ALLOWED:
+    logger.error("⚠️ ADMIN_ID تنظیم نشده — پنل ادمین غیرفعال است (حالت تست ادمین خودکار فقط با ALLOW_AUTO_ADMIN=1).")
+
+
 def _try_load_auto_admin():
     """اگه ADMIN_ID == 0، تلاش می‌کنه auto_admin_id رو از دیتابیس بخونه و ADMIN_ID رو آپدیت کنه."""
     global ADMIN_ID
-    if ADMIN_ID != 0:
+    if ADMIN_ID != 0 or not _AUTO_ADMIN_ALLOWED:
         return
     try:
         row = db.conn.execute("SELECT value FROM settings WHERE key='auto_admin_id'").fetchone()
@@ -486,7 +500,7 @@ def _try_load_auto_admin():
 def _set_auto_admin(uid):
     """در TEST MODE، اولین کاربر به‌عنوان ادمین خودکار در DB ذخیره میشه و ADMIN_ID آپدیت میشه."""
     global ADMIN_ID
-    if ADMIN_ID != 0:
+    if ADMIN_ID != 0 or not _AUTO_ADMIN_ALLOWED:
         return False
     try:
         with db._lock:
@@ -515,9 +529,6 @@ for _days in VIP_PRICES.keys():
 CHANNELS = []
 channel_info = {}
 broken_channels = set()  # کانال‌هایی که ربات نمی‌تواند اعضایشان را بررسی کند (v4.7 — قبل از load)
-# v4.7: تزریق به bot_db برای گزارش روزانه (get_full_daily_report_data)
-import bot_db as _bot_db_mod
-_bot_db_mod.broken_channels = broken_channels
 
 # کلید خاموش/روشن عضویت اجباری — از Environment Variable
 # FORCE_JOIN_ENABLED=0 یا false → عضویت اجباری کاملاً غیرفعال
@@ -771,6 +782,25 @@ def reg_anon(sender, receiver):
     else:
         anon_daily_normal[sender].append(now)
 
+# ====== v5.3: دکمه‌های پیام ناشناس با توکن مات (بدون شناسهٔ عددی فرستنده) ======
+from services import anon_refs as _anon_refs  # noqa: E402
+from services import metrics as _metrics  # noqa: E402 — v5.4: شمارنده‌های ماندگار داشبورد
+
+
+def _anon_markup(owner_id, target_id, blocked=False):
+    """کیبورد پیام ناشناس برای owner (گیرنده) دربارهٔ target (فرستنده) — بدون افشای شناسه."""
+    tok = _anon_refs.make(owner_id, target_id)
+    m = types.InlineKeyboardMarkup()
+    if blocked:
+        m.add(types.InlineKeyboardButton("🔄 پاسخ ناشناس", callback_data=f"axr_{tok}"),
+              types.InlineKeyboardButton("✅ آنبلاک", callback_data=f"axu_{tok}"))
+    else:
+        m.add(types.InlineKeyboardButton("🔄 پاسخ ناشناس", callback_data=f"axr_{tok}"))
+        m.add(types.InlineKeyboardButton("🚫 بلاک", callback_data=f"axb_{tok}"),
+              types.InlineKeyboardButton("⚠️ گزارش تخلف", callback_data=f"axp_{tok}"))
+    return m
+
+
 def can_anon_contact(sender_id, target_id):
     """v3.22 امنیتی: ضد تماس سرد — مخاطب ناشناس فقط باید
     فضولِ تلهٔ فرستنده یا طرفِ گفتگوی ناشناسِ قبلی (در هر دو جهت) باشد.
@@ -1013,6 +1043,13 @@ def get_recently_active_users(seconds=300):
     with _recently_active_lock:
         return [uid for uid, ts in _recently_active.items() if ts >= cutoff]
 
+
+def get_recently_active_items(seconds=300):
+    """v5.3: مثل get_recently_active_users ولی با زمان آخرین فعالیت (برای اسکنر ماموریت)."""
+    cutoff = time.time() - seconds
+    with _recently_active_lock:
+        return [(uid, ts) for uid, ts in _recently_active.items() if ts >= cutoff]
+
 STREAK_MILESTONES = {3: 100, 7: 250, 14: 500, 30: 1200}
 
 # ====== v3.6: چرخ شانس روزانه (VIP) ======
@@ -1120,6 +1157,11 @@ def record_message(user_id: int = None):
             _month_requests.increment()
     except Exception:
         pass
+    # v5.4: فعال روزانه + درخواست ساعتی ماندگار (services.metrics) — با ری‌استارت صفر نمی‌شود
+    try:
+        _metrics.hit(user_id)
+    except Exception:
+        pass
     now = time.time()
     with msg_lock:
         msg_times.append(now)
@@ -1177,7 +1219,7 @@ def _button_display_name(callback_data):
 import bot_backups as _bot_backups  # v4.7 استخراج از main.py — ماژول bot_backups
 _bot_backups._bind(globals())  # تزریق اشیاء ربات (bot/db/texts/...)
 from bot_backups import (  # noqa: F401 — نام‌های منتقل‌شده به ماژول
-    build_daily_report_text, daily_report_loop, _make_db_backup_snapshot, _fmt_size,
+    _make_db_backup_snapshot, _fmt_size,
     _gzip_db_file, _send_document_with_retry, _next_backup_target, VACUUM_INTERVAL_DAYS,
     _vacuum_due, _maintenance_before_backup, _snapshot_health_and_users, nightly_backup_loop,
     _restore_pending_lock, _restore_pending
@@ -1191,15 +1233,25 @@ def _set_restore_pending(val):
 def _validate_sqlite_file(path):
     """بررسی اینکه فایل یک SQLite معتبر با جدول users باشد. خروجی: (ok, n_users یا پیام خطا)."""
     try:
-        conn = sqlite3.connect(str(path))
+        # v5.3: باز کردن فقط-خواندنی + integrity_check قبل از جایگزینی — قبلاً فایل خراب/ناقص
+        # (مثلاً دانلود نیمه‌کاره) فقط با وجود جدول users پذیرفته می‌شد و دیتابیس سالم را
+        # جایگزین می‌کرد.
+        with open(path, "rb") as _fh:
+            if _fh.read(16) != b"SQLite format 3\x00":
+                return False, "فایل SQLite نیست (هدر نامعتبر)."
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
-        if not cur.fetchone():
+        try:
+            cur = conn.cursor()
+            _ic = cur.execute("PRAGMA integrity_check(20)").fetchall()
+            if not _ic or str(_ic[0][0]).lower() != "ok":
+                return False, "integrity_check ناموفق: " + "; ".join(str(r[0]) for r in _ic[:3])[:300]
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+            if not cur.fetchone():
+                return False, "جدول users یافت نشد — این فایل دیتابیس این ربات نیست."
+            n_users = cur.execute("SELECT COUNT(*) AS c FROM users").fetchone()['c']
+        finally:
             conn.close()
-            return False, "جدول users یافت نشد — این فایل دیتابیس این ربات نیست."
-        n_users = cur.execute("SELECT COUNT(*) AS c FROM users").fetchone()['c']
-        conn.close()
         return True, n_users
     except Exception as e:
         return False, str(e)
@@ -1325,7 +1377,14 @@ def restore_receive_document(message):
         if fname.endswith('.gz') or (len(downloaded) > 2 and downloaded[0] == 0x1F and downloaded[1] == 0x8B):
             import gzip as _gzip
             try:
-                downloaded = _gzip.decompress(downloaded)
+                # v5.3: بازکردن محدود (ضد gzip-bomb) — حداکثر ۴۰۰MB خروجی
+                _gz_limit = 400 * 1024 * 1024
+                _dec = _gzip.GzipFile(fileobj=io.BytesIO(downloaded))
+                _out = _dec.read(_gz_limit + 1)
+                if len(_out) > _gz_limit:
+                    raise ValueError("حجم پس از بازکردن بیش از ۴۰۰MB")
+                downloaded = _out
+                del _out
                 logger.info("restore: gz file decompressed (%s bytes).", len(downloaded))
             except Exception as _gz_err:
                 with _restore_pending_lock:
@@ -2124,6 +2183,11 @@ def _run_broadcast_async_impl(admin_chat_id, preview_msg, resume_state=None, mar
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                 ("last_broadcast_stats", f"{sent_cnt}/{total} ({success_rate}%)")
             )
+            # v5.4: زمان پخش برای نمایش در داشبورد
+            db.conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                ("last_broadcast_at", str(int(time.time())))
+            )
             db.conn.commit()
     except: pass
     # v3.23: کش آمار کهنه شده (آخرین پخش) بی‌اعتبار شود
@@ -2272,10 +2336,26 @@ def _check_and_award_tasks_xp(user_id, notify=True):
        اگر notify=False (همگام‌سازی/بازکردن صفحه): بی‌صدا فقط XP اعطا می‌شود (بدون اسپم)."""
     newly_completed = []  # لیست تسک‌های تازه تکمیل‌شده
 
+    # v5.3: یک کوئری برای همهٔ پاداش‌های گرفته‌شده — قبلاً به ازای هر تسک یک has_bonus
+    # (زیر قفل سراسری) اجرا می‌شد: ~۲۰۰ کوئری برای هر کاربر در هر دور اسکنر.
+    try:
+        with db._lock:
+            _awarded = {r[0] for r in db.conn.execute(
+                "SELECT bonus_type FROM xp_bonuses WHERE user_id=? AND bonus_type LIKE 'task\\_%' ESCAPE '\\'",
+                (user_id,)).fetchall()}
+    except Exception:
+        _awarded = None
+    if _awarded is not None and len(_awarded) >= len(tasks_module.TASKS):
+        if all(f"task_{t['id']}" in _awarded for t in tasks_module.TASKS):
+            return  # همهٔ ماموریت‌ها قبلاً اعطا شده‌اند
+
     for task in tasks_module.TASKS:
         task_id = task["id"]
         # اگر قبلاً این تسک پاداش گرفته، رد کن
-        if db.has_bonus(user_id, f"task_{task_id}"):
+        if _awarded is not None:
+            if f"task_{task_id}" in _awarded:
+                continue
+        elif db.has_bonus(user_id, f"task_{task_id}"):
             continue
         try:
             # بررسی آیا تسک انجام شده
@@ -2420,7 +2500,7 @@ def _add_reveal_button(markup, owner_id, clicker_id, vip_owner):
             return markup
         price_toman = db.get_setting_int("reveal_price", 30000) // 10
         markup.add(
-            types.InlineKeyboardButton(f"🔓 باز کردن هویت ({to_persian_digits(price_toman)} تومان)", callback_data=f"reveal_buy_{clicker_id}"),
+            types.InlineKeyboardButton(f"🔓 باز کردن هویت ({to_persian_digits(price_toman)} تومان)", callback_data=_anon_refs.snoop_cb("reveal_buy_", owner_id, clicker_id)),
             types.InlineKeyboardButton("🏅 VIP", callback_data="vip_info"))
     except Exception:
         pass
@@ -3914,16 +3994,16 @@ def _trap_owner_report(decision):
 
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("🏷️ لقب دادن", callback_data=f"nick_{clicker_id}"),
-            types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=f"anon_{clicker_id}"),
-            types.InlineKeyboardButton("📊 اطلاعات فضول", callback_data=f"snoopdetail_{clicker_id}"),
-            types.InlineKeyboardButton("🎁 هدیه به فضول", callback_data=f"giftvip_{clicker_id}"),
+            types.InlineKeyboardButton("🏷️ لقب دادن", callback_data=_anon_refs.snoop_cb("nick_", owner_id, clicker_id)),
+            types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=_anon_refs.snoop_cb("anon_", owner_id, clicker_id)),
+            types.InlineKeyboardButton("📊 اطلاعات فضول", callback_data=_anon_refs.snoop_cb("snoopdetail_", owner_id, clicker_id)),
+            types.InlineKeyboardButton("🎁 هدیه به فضول", callback_data=_anon_refs.snoop_cb("giftvip_", owner_id, clicker_id)),
             types.InlineKeyboardButton("📋 لیست فضول‌ها", callback_data="snooplist_page_1"),
             types.InlineKeyboardButton("🏠 خانه", callback_data="main_menu")
         )
         _add_reveal_button(markup, owner_id, clicker_id, vip_owner)
         if repeat > 3:
-            markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=f"mute_{clicker_id}"))
+            markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=_anon_refs.snoop_cb("mute_", owner_id, clicker_id)))
 
         if photo_file_id and vip_owner:
             try: bot.send_photo(owner_id, photo_file_id, caption=msg, reply_markup=markup)
@@ -4050,15 +4130,15 @@ def _start_cmd_impl(message):
             pass
         return
     # در حالت تست (ADMIN_ID == 0) شناسه کاربر رو لاگ کن
-    if ADMIN_ID == 0:
-        logger.info(f"🧪 TEST MODE: /start received from chat_id={chat_id}, user_id={message.from_user.id}, username={message.from_user.username}")
+    if ADMIN_ID == 0 and _AUTO_ADMIN_ALLOWED:
+        logger.info(f"🧪 TEST MODE: /start received from chat_id={chat_id}, user_id={message.from_user.id}")
     clear_user_state(chat_id)
     remove_support_session(chat_id)
     pop_support_partner(chat_id)
     pop_admin_reply(chat_id)
 
     # در TEST MODE، اولین کاربر به‌صورت خودکار ادمین میشه
-    if ADMIN_ID == 0:
+    if ADMIN_ID == 0 and _AUTO_ADMIN_ALLOWED:
         was_set = _set_auto_admin(chat_id)
         if was_set:
             try:
@@ -4149,8 +4229,13 @@ def _start_cmd_impl(message):
         # ── v4.4: خرید تک‌نفرهٔ هویت از مینی‌اپ — param: reveal_<base62> ──
         # (رفع باگ: این پارامتر قبلاً هیچ هندلری نداشت و «لینک نامعتبر» می‌داد)
         if param.startswith("reveal_"):
+            _rv_code = param[len("reveal_"):]
             try:
-                rid = decode_id(param[len("reveal_"):])
+                if _rv_code.startswith("x"):
+                    # v5.3: کد مات — فقط برای همان صاحب تله‌ای که ساخته شده resolve می‌شود
+                    rid = _anon_refs.resolve(user_id, _rv_code[1:]) or 0
+                else:
+                    rid = decode_id(_rv_code)  # سازگاری با لینک‌های قدیمی base62
             except Exception:
                 bot.reply_to(message, "🔴 لینک نامعتبر.", reply_markup=main_menu(message.from_user.id)); return
             if rid <= 0 or rid == user_id:
@@ -4623,7 +4708,7 @@ def _text_handler_inner(message):
                 bot.reply_to(message, _vg[0], reply_markup=_vg[1])
                 return
             if not is_subscribed(chat_id):
-                markup = build_channel_keyboard(f"anon_reply_{target_id}", chat_id)
+                markup = build_channel_keyboard(f"axr_{_anon_refs.make(chat_id, target_id)}", chat_id)
                 if markup:
                     bot.reply_to(message, texts.FORCE_JOIN_PROMPT, reply_markup=markup)
                 return
@@ -4653,11 +4738,8 @@ def _text_handler_inner(message):
                     emoji, mask_text = mask_data
                     mask = f"{emoji} {escape_md(mask_text)}" if mask_text else emoji
             msg_text = f"🎭 *{mask}* نجوا کرد:\n{escape_md(text)}" if mask else f"📩 *پاسخ ناشناس:*\n{escape_md(text)}"
-            reply_markup = types.InlineKeyboardMarkup()
-            reply_markup.add(types.InlineKeyboardButton("🔄 پاسخ ناشناس", callback_data=f"anon_reply_{chat_id}"))
-            # رفع باگ: حذف dead code — چون در این نقطه target مطمئناً sender را بلاک نکرده
-            reply_markup.add(types.InlineKeyboardButton("🚫 بلاک", callback_data=f"block_{chat_id}"),
-                             types.InlineKeyboardButton("⚠️ گزارش تخلف", callback_data=f"report_{chat_id}"))
+            # v5.3: توکن مات به‌جای شناسهٔ عددی فرستنده (ضد کشف هویت از callback_data)
+            reply_markup = _anon_markup(target_id, chat_id)
             try:
                 bot.send_message(target_id, msg_text, reply_markup=reply_markup)
                 db.add_anon_log(chat_id, target_id, text)
@@ -4703,11 +4785,8 @@ def _text_handler_inner(message):
                     emoji, mask_text = mask_data
                     mask = f"{emoji} {escape_md(mask_text)}" if mask_text else emoji
             msg_text = f"🎭 *{mask}* نجوا کرد:\n{escape_md(text)}" if mask else f"📩 *پیام ناشناس:*\n{escape_md(text)}"
-            reply_markup = types.InlineKeyboardMarkup()
-            reply_markup.add(types.InlineKeyboardButton("🔄 پاسخ ناشناس", callback_data=f"anon_reply_{chat_id}"))
-            # رفع باگ: حذف dead code — چون در این نقطه target مطمئناً sender را بلاک نکرده
-            reply_markup.add(types.InlineKeyboardButton("🚫 بلاک", callback_data=f"block_{chat_id}"),
-                             types.InlineKeyboardButton("⚠️ گزارش تخلف", callback_data=f"report_{chat_id}"))
+            # v5.3: توکن مات به‌جای شناسهٔ عددی فرستنده (ضد کشف هویت از callback_data)
+            reply_markup = _anon_markup(target_id, chat_id)
             try:
                 bot.send_message(target_id, msg_text, reply_markup=reply_markup)
                 db.add_anon_log(chat_id, target_id, text)
@@ -5543,7 +5622,7 @@ def show_snoop_list(chat_id, page=1, message_id=None):
         disp = s.get('nickname') or s['name']
         emoji = get_user_rank_emoji(s['clicker_id'])
         btn_text = f"{emoji} {disp}" if emoji else disp
-        buttons.append(types.InlineKeyboardButton(btn_text, callback_data=f"snoopdetail_{s['clicker_id']}"))
+        buttons.append(types.InlineKeyboardButton(btn_text, callback_data=_anon_refs.snoop_cb("snoopdetail_", chat_id, s['clicker_id'])))
     markup = types.InlineKeyboardMarkup(row_width=2)
     for i in range(0, len(buttons), 2):
         if i+1 < len(buttons): markup.add(buttons[i], buttons[i+1])
@@ -6681,16 +6760,16 @@ def _callback_handler_impl(call):
                                 msg += "\n\n🎁 *هدیه:* ۱ روز VIP به خاطر شکار یک کاربر جدید!"
                             markup = types.InlineKeyboardMarkup(row_width=2)
                             markup.add(
-                                types.InlineKeyboardButton("🏷️ لقب دادن", callback_data=f"nick_{info['clicker_id']}"),
-                                types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=f"anon_{info['clicker_id']}"),
-                                types.InlineKeyboardButton("📊 اطلاعات فضول", callback_data=f"snoopdetail_{info['clicker_id']}"),
-                                types.InlineKeyboardButton("🎁 هدیه به فضول", callback_data=f"giftvip_{info['clicker_id']}"),
+                                types.InlineKeyboardButton("🏷️ لقب دادن", callback_data=_anon_refs.snoop_cb("nick_", user_id, info['clicker_id'])),
+                                types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=_anon_refs.snoop_cb("anon_", user_id, info['clicker_id'])),
+                                types.InlineKeyboardButton("📊 اطلاعات فضول", callback_data=_anon_refs.snoop_cb("snoopdetail_", user_id, info['clicker_id'])),
+                                types.InlineKeyboardButton("🎁 هدیه به فضول", callback_data=_anon_refs.snoop_cb("giftvip_", user_id, info['clicker_id'])),
                                 types.InlineKeyboardButton("📋 لیست فضول‌ها", callback_data="snooplist_page_1"),
                                 types.InlineKeyboardButton("🏠 خانه", callback_data="main_menu")
                             )
                             _add_reveal_button(markup, info['owner_id'], info['clicker_id'], info['vip_owner'])
                             if info['repeat'] > 3:
-                                markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=f"mute_{info['clicker_id']}"))
+                                markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=_anon_refs.snoop_cb("mute_", user_id, info['clicker_id'])))
                             if info['photo_file_id'] and info['vip_owner']:
                                 try:
                                     bot.send_photo(user_id, info['photo_file_id'], caption=msg, reply_markup=markup)
@@ -6717,6 +6796,14 @@ def _callback_handler_impl(call):
                         except:
                             pass
                     return
+
+            # ── v5.3: callback های توکن‌دار پیام ناشناس → قالب داخلی (فقط برای owner همان توکن) ──
+            if data.startswith(_anon_refs.PREFIXES):
+                _legacy_data = _anon_refs.translate(user_id, data)
+                if _legacy_data is None:
+                    bot.answer_callback_query(call.id, "⌛ این دکمه منقضی یا نامعتبر است.", show_alert=True)
+                    return
+                data = _legacy_data
 
             # ============================================================
             # از اینجا به بعد، تمام بخش‌های اصلی callback_handler قرار دارند
@@ -6746,16 +6833,16 @@ def _callback_handler_impl(call):
                             msg += "\n\n🎁 *هدیه:* ۱ روز VIP به خاطر شکار یک کاربر جدید!"
                         markup = types.InlineKeyboardMarkup(row_width=2)
                         markup.add(
-                            types.InlineKeyboardButton("🏷️ لقب دادن", callback_data=f"nick_{info['clicker_id']}"),
-                            types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=f"anon_{info['clicker_id']}"),
-                            types.InlineKeyboardButton("📊 اطلاعات فضول", callback_data=f"snoopdetail_{info['clicker_id']}"),
-                            types.InlineKeyboardButton("🎁 هدیه به فضول", callback_data=f"giftvip_{info['clicker_id']}"),
+                            types.InlineKeyboardButton("🏷️ لقب دادن", callback_data=_anon_refs.snoop_cb("nick_", user_id, info['clicker_id'])),
+                            types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=_anon_refs.snoop_cb("anon_", user_id, info['clicker_id'])),
+                            types.InlineKeyboardButton("📊 اطلاعات فضول", callback_data=_anon_refs.snoop_cb("snoopdetail_", user_id, info['clicker_id'])),
+                            types.InlineKeyboardButton("🎁 هدیه به فضول", callback_data=_anon_refs.snoop_cb("giftvip_", user_id, info['clicker_id'])),
                             types.InlineKeyboardButton("📋 لیست فضول‌ها", callback_data="snooplist_page_1"),
                             types.InlineKeyboardButton("🏠 خانه", callback_data="main_menu")
                         )
                         _add_reveal_button(markup, info['owner_id'], info['clicker_id'], info['vip_owner'])
                         if info['repeat'] > 3:
-                            markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=f"mute_{info['clicker_id']}"))
+                            markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=_anon_refs.snoop_cb("mute_", user_id, info['clicker_id'])))
                         if info['photo_file_id'] and info['vip_owner']:
                             try:
                                 bot.send_photo(user_id, info['photo_file_id'], caption=msg, reply_markup=markup)
@@ -6879,11 +6966,11 @@ def _callback_handler_impl(call):
                     # ساخت کیبورد جدید با دکمه «با صدا»
                     new_markup = types.InlineKeyboardMarkup(row_width=2)
                     new_markup.add(
-                        types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=f"anon_{target_id}"),
-                        types.InlineKeyboardButton("🏷️ لقب", callback_data=f"nick_{target_id}"),
-                        types.InlineKeyboardButton("🎁 هدیه VIP", callback_data=f"giftvip_{target_id}"),
+                        types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=_anon_refs.snoop_cb("anon_", user_id, target_id)),
+                        types.InlineKeyboardButton("🏷️ لقب", callback_data=_anon_refs.snoop_cb("nick_", user_id, target_id)),
+                        types.InlineKeyboardButton("🎁 هدیه VIP", callback_data=_anon_refs.snoop_cb("giftvip_", user_id, target_id)),
                         types.InlineKeyboardButton("🔙 لیست", callback_data="snooplist_page_1"))
-                    new_markup.add(types.InlineKeyboardButton("🔔 با صدا", callback_data=f"unmute_{target_id}"))
+                    new_markup.add(types.InlineKeyboardButton("🔔 با صدا", callback_data=_anon_refs.snoop_cb("unmute_", user_id, target_id)))
                     new_markup.add(types.InlineKeyboardButton("🏠 خانه", callback_data="main_menu"))
                     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_markup)
                 except: pass
@@ -6896,11 +6983,11 @@ def _callback_handler_impl(call):
                 try:
                     new_markup = types.InlineKeyboardMarkup(row_width=2)
                     new_markup.add(
-                        types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=f"anon_{target_id}"),
-                        types.InlineKeyboardButton("🏷️ لقب", callback_data=f"nick_{target_id}"),
-                        types.InlineKeyboardButton("🎁 هدیه VIP", callback_data=f"giftvip_{target_id}"),
+                        types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=_anon_refs.snoop_cb("anon_", user_id, target_id)),
+                        types.InlineKeyboardButton("🏷️ لقب", callback_data=_anon_refs.snoop_cb("nick_", user_id, target_id)),
+                        types.InlineKeyboardButton("🎁 هدیه VIP", callback_data=_anon_refs.snoop_cb("giftvip_", user_id, target_id)),
                         types.InlineKeyboardButton("🔙 لیست", callback_data="snooplist_page_1"))
-                    new_markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=f"mute_{target_id}"))
+                    new_markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=_anon_refs.snoop_cb("mute_", user_id, target_id)))
                     new_markup.add(types.InlineKeyboardButton("🏠 خانه", callback_data="main_menu"))
                     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_markup)
                 except: pass
@@ -7048,9 +7135,8 @@ def _callback_handler_impl(call):
             if data.startswith("block_"):
                 target_id = int(data.split("_")[1])
                 db.block_anon(user_id, target_id)
-                new_markup = types.InlineKeyboardMarkup()
-                new_markup.add(types.InlineKeyboardButton("🔄 پاسخ ناشناس", callback_data=f"anon_reply_{user_id}"),
-                               types.InlineKeyboardButton("✅ آنبلاک", callback_data=f"unblock_{target_id}"))
+                # v5.3: توکن مات + رفع باگ قدیمی (دکمهٔ پاسخ به شناسهٔ «خود کاربر» اشاره می‌کرد)
+                new_markup = _anon_markup(user_id, target_id, blocked=True)
                 try:
                     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_markup)
                 except:
@@ -7061,9 +7147,7 @@ def _callback_handler_impl(call):
             if data.startswith("unblock_"):
                 target_id = int(data.split("_")[1])
                 db.unblock_anon(user_id, target_id)
-                new_markup = types.InlineKeyboardMarkup()
-                new_markup.add(types.InlineKeyboardButton("🔄 پاسخ ناشناس", callback_data=f"anon_reply_{user_id}"),
-                               types.InlineKeyboardButton("🚫 بلاک", callback_data=f"block_{target_id}"))
+                new_markup = _anon_markup(user_id, target_id)
                 try:
                     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_markup)
                 except:
@@ -7075,11 +7159,12 @@ def _callback_handler_impl(call):
             # ----- گزارش تخلف -----
             if data.startswith("report_") and not data.startswith("reportreason_"):
                 target_id = int(data.split("_")[1])
+                _rtok = _anon_refs.make(user_id, target_id)  # v5.3: بدون شناسهٔ عددی در دکمه
                 markup = types.InlineKeyboardMarkup(row_width=1)
                 markup.add(
-                    types.InlineKeyboardButton("😖 مزاحمت", callback_data=f"reportreason_{target_id}_1"),
-                    types.InlineKeyboardButton("🤬 توهین", callback_data=f"reportreason_{target_id}_2"),
-                    types.InlineKeyboardButton("🚯 اسپم", callback_data=f"reportreason_{target_id}_3"),
+                    types.InlineKeyboardButton("😖 مزاحمت", callback_data=f"axq_{_rtok}_1"),
+                    types.InlineKeyboardButton("🤬 توهین", callback_data=f"axq_{_rtok}_2"),
+                    types.InlineKeyboardButton("🚯 اسپم", callback_data=f"axq_{_rtok}_3"),
                     types.InlineKeyboardButton("❌ انصراف", callback_data="cancel_state"),
                 )
                 bot.answer_callback_query(call.id)
@@ -8074,160 +8159,24 @@ def _callback_handler_impl(call):
                     reply_markup=cancel_markup())
                 return
             if data == "admin_daily":
+                # v5.4: داشبورد «روند و مقایسه» — محاسبه در services.dashboard (مشترک با مینی‌اپ)؛
+                # «بروزرسانی» کش را تا ۱۰ ثانیه می‌پذیرد، باز کردن عادی تا ۶۰ ثانیه.
                 if user_id != ADMIN_ID:
                     bot.answer_callback_query(call.id, "⛔")
                     return
+                bot.answer_callback_query(call.id, "⏳ در حال محاسبه…")
                 try:
-                    expiring_vip_count = len(db.get_expiring_vips(0)) + len(db.get_expiring_vips(1))
-                except Exception:
-                    expiring_vip_count = 0
-                # v3.23: آمار سنگین با کش ۶۰ ثانیه‌ای — پنل روی ۵۰۰۰+ کاربر دیگر دیتابیس را قفل نمی‌کند
-                s, s_ts = db.get_daily_stats_cached()
-
-                all_codes = db.get_all_gift_codes()
-                active_codes_count = len([c for c in all_codes if c['used_count'] < c['max_uses']])
-                broken_list = ', '.join(broken_channels) if broken_channels else 'ندارد'
-
-                # محاسبهٔ کاربران جدید فعال‌شده امروز (کاربرانی که امروز کلیک داده‌اند و ایجادشده امروز هستند)
-                # این برای نمایش "کاربران جدیدِ فعال‌شده امروز"
-                # ساده‌سازی: تعداد کاربرانی که امروز created_at دارند و در clicks امروز حضور دارند
-                # اما چون پیاده‌سازی کامل‌اش سنگین است، همان new_today استفاده می‌کنیم (تقریبی)
-
-                # ۵ تلهٔ برتر امروز (بر اساس فضول — مخفی اگر صفر) — v3.23: با کش
-                today = datetime.date.today().isoformat()
-                def _q_top_traps_today():
-                    try:
-                        return db.conn.execute(
-                            "SELECT c.owner_id, u.first_name, COUNT(DISTINCT c.clicker_id) as c FROM clicks c "
-                            "JOIN users u ON c.owner_id=u.user_id WHERE date(c.clicked_at)=? "
-                            "GROUP BY c.owner_id ORDER BY c DESC LIMIT 5", (today,)).fetchall()
-                    except Exception:
-                        return []
-                top_distinct_rows, _tt_ts = db._cached_stat("top_traps_today", 60.0, _q_top_traps_today)
-                top_rank_icons = ['🥇', '🥈', '🥉', '🏅', '🎖️']
-
-                # محاسبه آخرین پخش همگانی
-                last_bc = db.conn.execute(
-                    "SELECT value FROM settings WHERE key='last_broadcast_stats'").fetchone()
-                last_bc_str = last_bc['value'] if last_bc else "ندارد"
-
-                # بخش ۵ تلهٔ برتر — فقط اگر حداقل یک فضول امروز ثبت شده باشد
-                top_section = ""
-                if top_distinct_rows:
-                    top_section = (
-                        f"🏆 ۵ تلهٔ برتر امروز (بر اساس فضول):\n"
-                        + "\n".join(
-                            f"{top_rank_icons[i]} {escape_md(crown_name(sanitize_name(r['first_name'] or 'بی‌نام'), db.is_vip(r['owner_id'])))} (id{to_persian_digits(r['owner_id'])}) — {to_persian_digits(r['c'])} فضول"
-                            for i, r in enumerate(top_distinct_rows)
-                        )
-                        + f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    )
-
-                # v3.5: وضعیت چالش (خط شرطی) — v3.18: نام جدید — v4.6: جایزهٔ vip یا پاکت
-                _ch_st = get_challenge_status()
-                if _ch_st == "scheduled":
-                    _ch_prizes = _challenge_prize_dict(db.get_setting_int("challenge_reward_days", 3))
-                    challenge_line = (
-                        f"🏆 چالش فضول‌گیری: فردا از ساعت ۰۰:۰۰ اجرا می‌شه\n"
-                        f" (جوایز: 🥇 {_ch_prizes['first_prize']} | 🥈 {_ch_prizes['second_prize']} | 🥉 {_ch_prizes['third_prize']})\n"
-                    )
-                elif _ch_st == "active":
-                    challenge_line = f"🏆 چالش فضول‌گیری: در جریان — تا پایان شمارش: {_challenge_remaining_str()}\n"
-                else:
-                    challenge_line = ""
-
-                # ── v3.21: داده‌های جدید داشبورد ──
-                joins_today = db.get_channel_joins_today()
-                err_count, err_last = ERROR_COUNTER.snapshot()
-                if err_count:
-                    err_line = f"🧯 مشکلات ربات: {to_persian_digits(err_count)} خطا (آخرین: {escape_md(err_last[:60])})\n"
-                else:
-                    err_line = "🧯 مشکلات ربات: ندارد ✅\n"
-                month_reqs = 0
-                try:
-                    if _month_requests:
-                        month_reqs = _month_requests.current()
-                except Exception:
-                    month_reqs = 0
-                with _requested_lock:
-                    requested_total = len(_requested_users)
-                try:
-                    _top_cb = db.get_callback_stats(limit=1)
-                    top_cb_line = ""
-                    if _top_cb:
-                        top_cb_line = (
-                            f"🖱️ پرکلیک‌ترین دکمه: «{_button_display_name(_top_cb[0]['callback_data'])}» "
-                            f"({to_persian_int(_top_cb[0]['click_count'])} کلیک)\n"
-                        )
-                except Exception:
-                    top_cb_line = ""
-                try:
-                    (_st_active, _st_best), _ = db.get_bonus_streak_stats_cached()
-                except Exception:
-                    _st_active, _st_best = 0, 0
-
-                text = (
-                    f"📊 داشبورد ربات فضول‌گیر\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"🎯 شکار و تله‌ها\n"
-                    f"🔹 کلیک امروز: {to_persian_digits(s['clicks_today'])} | کل: {to_persian_int(s['total_clicks'])}\n"
-                    f"👑 فضول: {to_persian_int(s['distinct_clickers'])} | صاحبان تله: {to_persian_int(s['trap_owners'])}\n"
-                    f"📊 میانگین ۷ روز: {to_persian_digits(s['avg_7'])} کلیک/روز\n"
-                    + challenge_line
-                    + "\n"
-                    + top_section
-                    + f"🏅 VIP و درآمد\n"
-                    f"🔹 فعال: {to_persian_digits(s['active_vip'])} | ⏳ در شرف انقضا: {to_persian_digits(expiring_vip_count)}\n"
-                    f"💰 امروز: {fmt_amount_rial(s['revenue_today'])} ({to_persian_digits(s['tx_today'])} تراکنش)\n"
-                    f"💰 کل: {fmt_amount_rial(s['total_revenue'])} ({to_persian_digits(s['tx_total'])} تراکنش)\n"
-                    f"🔓 پروفایل بازشده: {to_persian_digits(s['reveals_total'])} بار | درآمد: {fmt_amount_rial(s['reveal_revenue'])}\n\n"
-                    f"🎁 کد هدیه: ساخته {to_persian_digits(s['gift_created'])} | استفاده {to_persian_digits(s['gift_used'])} | فعال {to_persian_digits(active_codes_count)}\n"
-                    f"💬 پیام ناشناس: {to_persian_int(s['anon_total'])}\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"⚙️ سیستم و عملکرد\n"
-                    f"📢 جوین اجباری: {to_persian_digits(s['channels_count'])} عدد | عضویت: {to_persian_int(s['total_joins'])} | امروز: {to_persian_digits(joins_today)}\n"
-                    f"⚠️ مشکل‌دار: {escape_md(broken_list)}\n"
-                    f"🛡️ مسدود ادمین: {to_persian_digits(s['total_banned'])} | بلاک‌کردن ربات: {to_persian_digits(s['blocked_bot_count'])}\n"
-                    f"⏱️ آپ‌تایم: {uptime_str()}\n"
-                    f"📨 درخواست‌های ۲۴ ساعت پیش: {to_persian_digits(get_messages_24h())}\n"
-                    f"🗓 درخواست‌های این ماه (شمسی): {to_persian_digits(month_reqs)}\n"
-                    + top_cb_line
-                    + f"🧑‍💻 کاربران با حداقل یک درخواست: {to_persian_digits(requested_total)} نفر\n"
-                    f"📢 آخرین پخش همگانی: {escape_md(last_bc_str)}\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"👥 کاربران و رشد\n"
-                    f"🔹 کل: {to_persian_int(s['total_users'])}\n"
-                    f"🆕 جدید امروز: +{to_persian_digits(s['new_today'])} | دیروز: +{to_persian_digits(s['new_yesterday'])}\n"
-                    f"🔹 فعال ۲۴ساعت: {to_persian_digits(s['active_today'])} | نرخ بازگشت: {to_persian_digits(s['return_rate'])}\n"
-                    f"✨ جدیدِ فعال‌شدهٔ امروز: {to_persian_digits(s['new_activated_today'])} نفر\n"
-                    f"🔥 استریک فعال: {to_persian_digits(_st_active)} نفر | رکورد: {to_persian_digits(_st_best)} روز\n"
-                    f"📥 ورود کاربران — بدون پارامتر: {to_persian_int(s['organic'])} | خوش‌آمد: {to_persian_int(s['welcome'])} | تله: {to_persian_int(s['referral'])}\n"
-                    + err_line +
-                    f"\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🔄 بروزرسانی آمار: {shamsi_date(datetime.datetime.fromtimestamp(s_ts, TEHRAN_TZ), with_time=True)} (کش ۶۰ ثانیه‌ای)"
-                )
-
-                markup = types.InlineKeyboardMarkup().add(
+                    from services import dashboard as _dash
+                    text = _dash.bot_text(_dash.collect(max_age=10.0))
+                except Exception as _d_err:
+                    logger.error(f"admin dashboard error: {_d_err}")
+                    text = f"❌ خطا در ساخت داشبورد: {escape_md(str(_d_err)[:120])}"
+                markup = types.InlineKeyboardMarkup(row_width=2).add(
                     types.InlineKeyboardButton("🔄 بروزرسانی", callback_data="admin_daily"),
                     types.InlineKeyboardButton("📊 آرشیو روزانه", callback_data="admin_daily_archive"),
-                    types.InlineKeyboardButton("🌙 گزارش روزانه", callback_data="admin_test_daily_report"),
-                    types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_panel")
                 )
+                markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="admin_panel"))
                 safe_edit_text(text, chat_id, call.message.message_id, reply_markup=markup)
-                bot.answer_callback_query(call.id)
-                return
-
-            # دکمه تست گزارش روزانه (برای ادمین)
-            if data == "admin_test_daily_report":
-                if user_id != ADMIN_ID:
-                    bot.answer_callback_query(call.id, "⛔")
-                    return
-                try:
-                    text = build_daily_report_text()
-                    bot.send_message(chat_id, text)
-                except Exception as e:
-                    bot.send_message(chat_id, f"❌ خطا در ساخت گزارش: {e}")
-                bot.answer_callback_query(call.id)
                 return
 
             # ----- آرشیو روزانه — کاربران جدید در هر روز (v3.5: نمودار + خلاصه) -----
@@ -8793,17 +8742,17 @@ def _callback_handler_impl(call):
                     detail += "\n\n" + texts.REVEAL_TEASE
                 markup = types.InlineKeyboardMarkup(row_width=2)
                 markup.add(
-                    types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=f"anon_{cid}"),
-                    types.InlineKeyboardButton("🏷️ لقب", callback_data=f"nick_{cid}"),
-                    types.InlineKeyboardButton("🎁 هدیه VIP", callback_data=f"giftvip_{cid}"),
+                    types.InlineKeyboardButton("✉️ پیام ناشناس", callback_data=_anon_refs.snoop_cb("anon_", user_id, cid)),
+                    types.InlineKeyboardButton("🏷️ لقب", callback_data=_anon_refs.snoop_cb("nick_", user_id, cid)),
+                    types.InlineKeyboardButton("🎁 هدیه VIP", callback_data=_anon_refs.snoop_cb("giftvip_", user_id, cid)),
                     types.InlineKeyboardButton("🔙 لیست", callback_data="snooplist_page_1"))
                 if not vip and not db.is_revealed(user_id, cid):
                     price_toman = db.get_setting_int("reveal_price", 30000) // 10
-                    markup.add(types.InlineKeyboardButton(f"🔓 باز کردن هویت ({to_persian_digits(price_toman)} تومان)", callback_data=f"reveal_buy_{cid}"))
+                    markup.add(types.InlineKeyboardButton(f"🔓 باز کردن هویت ({to_persian_digits(price_toman)} تومان)", callback_data=_anon_refs.snoop_cb("reveal_buy_", user_id, cid)))
                 if db.is_snoop_muted(user_id, cid):
-                    markup.add(types.InlineKeyboardButton("🔔 با صدا", callback_data=f"unmute_{cid}"))
+                    markup.add(types.InlineKeyboardButton("🔔 با صدا", callback_data=_anon_refs.snoop_cb("unmute_", user_id, cid)))
                 else:
-                    markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=f"mute_{cid}"))
+                    markup.add(types.InlineKeyboardButton("🔕 بی‌صدا", callback_data=_anon_refs.snoop_cb("mute_", user_id, cid)))
                 markup.add(types.InlineKeyboardButton("🏠 خانه", callback_data="main_menu"))
                 bot.answer_callback_query(call.id)
                 if call.message.content_type == 'photo':
@@ -8859,8 +8808,8 @@ def _callback_handler_impl(call):
                 target_id = int(data.split("_")[1])
                 markup = types.InlineKeyboardMarkup(row_width=1)
                 for days, amount in VIP_PRICES.items():
-                    markup.add(types.InlineKeyboardButton(f"🎁 {vip_plan_label(days)} ({to_persian_digits(days)} روز) – {fmt_amount_toman(amount)}", callback_data=f"confirmgift_{target_id}_{days}"))
-                markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=f"snoopdetail_{target_id}"))
+                    markup.add(types.InlineKeyboardButton(f"🎁 {vip_plan_label(days)} ({to_persian_digits(days)} روز) – {fmt_amount_toman(amount)}", callback_data=_anon_refs.snoop_cb("confirmgift_", user_id, target_id, days)))
+                markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data=_anon_refs.snoop_cb("snoopdetail_", user_id, target_id)))
                 markup.add(types.InlineKeyboardButton("🏠 خانه", callback_data="main_menu"))
                 bot.answer_callback_query(call.id)
                 if call.message.content_type == 'photo':
@@ -9650,7 +9599,15 @@ def _callback_handler_impl(call):
             return
         
 # ====== هندلرهای پرداخت ======
-@bot.pre_checkout_query_handler(func=lambda query: True)
+# v5.3 (رفع باگ بحرانی پرداخت مینی‌اپ): telebot فقط «اولین» هندلرِ منطبق را اجرا می‌کند.
+# قبلاً این هندلر با func=True همهٔ فاکتورها (از جمله vip:… مینی‌اپ) را می‌گرفت و برای آن‌ها
+# فقط return می‌کرد → هندلر اختصاصی bot_integration هرگز اجرا نمی‌شد؛ پیش‌پرداخت بی‌پاسخ
+# می‌ماند و VIP خریدِ مینی‌اپ اعمال نمی‌شد. حالا فاکتورهای مینی‌اپ از همین فیلتر رد می‌شوند.
+def _is_miniapp_payload(payload) -> bool:
+    return str(payload or "").startswith("vip:")
+
+
+@bot.pre_checkout_query_handler(func=lambda query: not _is_miniapp_payload(query.invoice_payload))
 def pre_checkout(query):
     """رفع باگ: اعتبارسنجی payload قبل از تأیید پرداخت.
     بدون این اعتبارسنجی، کاربر می‌تواند با payload دستی پرداخت کند و VIP بگیرد."""
@@ -9743,7 +9700,8 @@ def pre_checkout(query):
         bot.answer_pre_checkout_query(query.id, ok=False,
             error_message="خطا در پردازش فاکتور.")
 
-@bot.message_handler(content_types=['successful_payment'])
+@bot.message_handler(content_types=['successful_payment'],
+                     func=lambda m: not _is_miniapp_payload(getattr(m.successful_payment, 'invoice_payload', '')))
 def successful_payment(message):
     payment = message.successful_payment
     payload = payment.invoice_payload
@@ -10113,16 +10071,29 @@ def task_scanner_loop():
     """v3.6: اعلان ماموریت در لحظهٔ انجام — هر ۶۰ ثانیه کاربران تازه‌فعال (۵ دقیقهٔ اخیر)
     بررسی می‌شوند و ماموریت‌های تازه‌تکمیل‌شده فوراً اعلام می‌شوند."""
     _task_scanner_silent_sync()
+    # v5.3: کاربری که از آخرین اسکن فعالیت تازه نداشته فقط هر ۱۸۰ ثانیه یک‌بار دوباره
+    # بررسی می‌شود (برای تسک‌هایی که با کار دیگران کامل می‌شوند) — قبلاً هر کاربر فعال
+    # در هر دقیقه کامل اسکن می‌شد (۵ بار به ازای هر فعالیت).
+    _last_scan: dict = {}
     while True:
         try:
             time.sleep(60)
-            for uid in get_recently_active_users(300):
+            _now = time.time()
+            for uid, act_ts in get_recently_active_items(300):
                 if uid == ADMIN_ID:
                     continue
+                _prev = _last_scan.get(uid)
+                if _prev is not None and act_ts <= _prev and _now - _prev < 180:
+                    continue
+                _last_scan[uid] = _now
                 try:
                     _check_and_award_tasks_xp(uid, notify=True)
                 except Exception as e:
                     logger.error(f"task scanner user error {uid}: {e}")
+            if len(_last_scan) > 5000 or _now % 600 < 60:
+                _cut = _now - 400
+                for _k in [k for k, v in _last_scan.items() if v < _cut]:
+                    _last_scan.pop(_k, None)
         except Exception as e:
             logger.error(f"task scanner loop error: {e}")
             time.sleep(120)
@@ -10491,7 +10462,6 @@ threading.Thread(target=periodic_cleanup, daemon=True).start()
 threading.Thread(target=clean_logs_periodically, daemon=True).start()
 threading.Thread(target=remind_vip_expiry, daemon=True).start()
 threading.Thread(target=broadcast_timeout_watcher, daemon=True).start()
-threading.Thread(target=daily_report_loop, daemon=True).start()
 threading.Thread(target=remind_inactive_users, daemon=True).start()
 threading.Thread(target=nightly_backup_loop, daemon=True).start()
 threading.Thread(target=challenge_loop, daemon=True).start()
@@ -10511,6 +10481,33 @@ def uptime_str():
     hours, rem = divmod(rem, 3600)
     minutes = rem // 60
     return f"{to_persian_digits(days)} روز و {to_persian_digits(hours)} ساعت و {to_persian_digits(minutes)} دقیقه"
+def _dashboard_runtime():
+    """v5.4: داده‌های زمان‌اجرای ربات برای services.dashboard (پنل ربات + مینی‌اپ)."""
+    err_count, err_last = ERROR_COUNTER.snapshot()
+    out = {"err_total": err_count, "err_last": err_last,
+           "broken_channels": sorted(str(c) for c in broken_channels)}
+    with _requested_lock:
+        out["requested_total"] = len(_requested_users)
+    try:
+        out["month_requests"] = _month_requests.current() if _month_requests else None
+    except Exception:
+        out["month_requests"] = None
+    try:
+        _top = db.get_callback_stats(limit=1)
+        if _top:
+            out["top_button"] = {"label": _button_display_name(_top[0]["callback_data"]),
+                                 "count": _top[0]["click_count"]}
+    except Exception:
+        pass
+    return out
+
+
+try:
+    from services import dashboard as _dashboard_mod
+    _dashboard_mod.set_runtime(_dashboard_runtime)
+except Exception as _dr_err:
+    logger.warning(f"dashboard runtime register failed: {_dr_err}")
+
 def print_startup_metrics():
     """خلاصهٔ تحلیلی استارتاپ — چاپ در لاگ برای پایش رشد/نگهداشت/درآمد."""
     try:
@@ -10587,7 +10584,12 @@ def start_background_tasks(bot=None):
     global BOT_START_TIME
     print(f"🚀 ربات @{BOT_USERNAME} راه‌اندازی شد (fozol-pro).", flush=True)
     BOT_START_TIME = time.time()
-    print_startup_metrics()
+    # v5.3: خودآزمایی‌های سنگین استارت (متریک‌های تحلیلی با چند ده کوئری روی clicks،
+    # رندر تستی لیدربورد با Pillow، پروب زنده و prewarm چرخ) فقط با STARTUP_DIAGNOSTICS=1.
+    # قبلاً هر ری‌استارت چند ده مگابایت RSS و چند ثانیه CPU مصرف می‌کرد.
+    _diag = (os.environ.get("STARTUP_DIAGNOSTICS") or "").strip().lower() in ("1", "true", "yes", "on")
+    if _diag:
+        print_startup_metrics()
 
     # ── بارگذاری کاربرانِ دارای درخواست ──
     try:
@@ -10632,6 +10634,10 @@ def start_background_tasks(bot=None):
     except Exception:
         pass
 
+    if not _diag:
+        print("ℹ️ startup diagnostics skipped (STARTUP_DIAGNOSTICS=1 برای فعال‌سازی)", flush=True)
+        return
+
     # ── v3.9.2: خودآزمایی رندر لیدربورد ──
     try:
         if leaderboard_img and leaderboard_img.AVAILABLE:
@@ -10656,178 +10662,8 @@ def start_background_tasks(bot=None):
     threading.Thread(target=_lb_live_probe, daemon=True).start()
 
 
+
 # ====== اجرا ======
+# v5.3: بلوک قدیمی __main__ (وبهوک/polling مستقل، ~۱۷۰ خط) حذف شد — نقطهٔ ورود فقط run.py است.
 if __name__ == "__main__":
-    print("⚠️ اجرای مستقیم main.py فقط برای توسعه است؛ روی Railway نقطهٔ ورود run.py است "
-          "(وبهوک/polling و گارد حافظه آنجا مدیریت می‌شوند).", flush=True)
-    print(f"🚀 ربات @{BOT_USERNAME} راه‌اندازی شد.", flush=True)
-    BOT_START_TIME = time.time()
-    print_startup_metrics()
-
-    # ── v3.21: بارگذاری کاربرانِ دارای درخواست + لاگ شمارندهٔ ماه شمسی ──
-    load_requested_users()
-    # ── v3.24.7: اصلاح یک‌باره — کسر ۱۴ روز VIP بدون منشا از حساب ۱۶۳۳۹۶۳۴ ──
-    # (ممیزی ۲۰۲۶-۰۹-۰۷: ۱۴ روز فراتر از فضول+تریال بدون رد پای دیتابیسی)
-    try:
-        if db.get_setting("vip_correction_16339634_done", "") != "1":
-            _adj = db.remove_vip_days(16339634, 14)
-            db.set_setting("vip_correction_16339634_done", "1")
-            db.add_transaction(16339634, "admin_vip_remove", 0, -14)
-            print(f"⚖️ VIP correction: -14 days from 16339634 (result: {_adj})", flush=True)
-    except Exception as _e:
-        logger.error("vip correction error: %s", _e)
-    try:
-        logger.info("[v3.21] requests this month (jalali %s): %s",
-                    _current_jalali_month_key(),
-                    _month_requests.current() if _month_requests else 0)
-    except Exception:
-        pass
-
-    # ── v3.23: تشخیص پخش همگانی نیمه‌کاره بعد از ری‌استارت/کرش ──
-    try:
-        _bc_st = _bc_state_read()
-        if _bc_st:
-            _mk_resume = types.InlineKeyboardMarkup(row_width=1)
-            _mk_resume.add(
-                types.InlineKeyboardButton("▶️ ادامه از محل قطع", callback_data="bc_resume_go"),
-                types.InlineKeyboardButton("🗑 لغو پخش نیمه‌کاره", callback_data="bc_resume_cancel"),
-            )
-            bot.send_message(ADMIN_ID,
-                "📢 پخش همگانی نیمه‌کاره پیدا شد (به‌خاطر ری‌استارت ربات):\n"
-                f"✅ ارسال‌شده: {to_persian_digits(_bc_st.get('sent', 0) or 0)} از {to_persian_digits(_bc_st.get('total', 0) or 0)}\n"
-                "می‌خواهید از همان‌جا ادامه دهید؟",
-                reply_markup=_mk_resume)
-            logger.info("[v3.23] unfinished broadcast detected (done=%s/%s)",
-                        _bc_st.get('done', 0), _bc_st.get('total', 0))
-    except Exception as _bc_err:
-        logger.error("broadcast resume detect error: %s", _bc_err)
-
-    # ── v3.11: کش لیدربورد کاملاً حذف شد — پاک‌سازی کلیدهای کهنه از settings ──
-    try:
-        db.set_setting("lb_cache_sig", "")
-        db.set_setting("lb_cache_fileid", "")
-        print("🧹 LB: stale cache keys cleared.", flush=True)
-    except Exception:
-        pass
-
-    # ── v3.9.2: خودآزمایی رندر لیدربورد (تشخیص فوری مشکل raqm/fribidi/فونت در لاگ) ──
-    try:
-        if leaderboard_img and leaderboard_img.AVAILABLE:
-            from PIL import features as _pilfeat
-            _rq = str(_pilfeat.check("raqm"))
-            _png_t = leaderboard_img._render(
-                [("𓆩👑𓆪 .✧･ﾟ: ✧ 𝑀𝒶𝒽𝓉𝒶𝒷 ✧:･ﾟ✧ 𓆩👑𓆪", 10, True, False),
-                 ("𝓕𝓪𝓽𝓮𝓶𝓮𝓱 🎀", 8, False, False), ("سارا محمدی", 6, False, False)],
-                "خودآزمایی")
-            print("🧪 LB SELFTEST: raqm=%s render=%s" % (
-                _rq, "OK(%d bytes)" % len(_png_t) if _png_t else "FAILED"), flush=True)
-        else:
-            print("🧪 LB SELFTEST: leaderboard_img در دسترس نیست (import Pillow شکست خورده)", flush=True)
-    except Exception:
-        import traceback as _tb
-        print("🧪 LB SELFTEST FAILED: " + _tb.format_exc(), flush=True)
-
-    # ── v3.9.4: پیش‌تولید انیمیشن‌های چرخ شانس (نخ پس‌زمینه) ──
-    threading.Thread(target=_wheel_prewarm_job, daemon=True).start()
-
-    # ── v3.10.0: پروب زندهٔ تابلو در پس‌زمینه (لاگ دادهٔ واقعی + PNG پروب) ──
-    threading.Thread(target=_lb_live_probe, daemon=True).start()
-
-    # ====== حالت Webhook (پیش‌فرض روی Railway) ======
-    # اگر متغیر WEBHOOK_URL ست شده باشد → webhook؛ وگرنه polling محلی
-    _webhook_url = os.environ.get("WEBHOOK_URL", "").strip()
-
-    if _webhook_url:
-        # --- حالت WEBHOOK ---
-        # v3.23: استخر نخ محدود + وب‌سرور چندنخی — زیر بار انفجاری ۵۰۰۰+ کاربر،
-        # به ازای هر آپدیت Thread نامحدود ساخته نمی‌شود؛ حافظه و قفل دیتابیس کنترل می‌شود.
-        from concurrent.futures import ThreadPoolExecutor
-        try:
-            from http.server import ThreadingHTTPServer as _THServer
-            from http.server import BaseHTTPRequestHandler  # v4.7: رفق NameError
-        except ImportError:  # پایتون خیلی قدیمی
-            from http.server import HTTPServer as _THServer
-            from http.server import BaseHTTPRequestHandler
-        pool_workers = min(4, max(2, int(os.environ.get("WEBHOOK_WORKERS", "4"))))
-        # v5.0: پیش‌فرض ۱۶→۴ و سقف ۴ نخ — پردازش موازی آپدیت خودش باعث burst ارسال می‌شد؛
-        # صف داخلی همین استخر + گیت سراسری bot_sender نرخ را نرمال نگه می‌دارد.
-        wh_pool = ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix="wh")
-        print(f"🧵 webhook worker pool: {pool_workers} threads (v5.0 gated)", flush=True)
-
-        secret = os.environ.get("WEBHOOK_SECRET", "").strip()
-        bot.remove_webhook()
-        if secret:
-            ok_wh = bot.set_webhook(url=_webhook_url, secret_token=secret,
-                                    allowed_updates=["message", "callback_query", "pre_checkout_query"])
-        else:
-            # بدون secret — بله هدر secret نمی‌فرستد
-            ok_wh = bot.set_webhook(url=_webhook_url,
-                                    allowed_updates=["message", "callback_query", "pre_checkout_query"])
-        print(f"🔗 webhook set → {_webhook_url} : {ok_wh}", flush=True)
-
-        class WHHandler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length)
-                try:
-                    update = types.Update.de_json(_json_module.loads(raw.decode()))
-                    hdr = (self.headers.get('X-Telegram-Bot-Api-Secret-Token') or
-                           self.headers.get('X-Bale-Secret-Token') or "")
-                    # اگر secret تنظیم شده باشد چک می‌شود؛ بدون secret همه قبول
-                    if (not secret) or hdr == secret:
-                        try:
-                            wh_pool.submit(bot.process_new_updates, [update])
-                        except Exception:
-                            # فالبک: اگر استخر مشکل خورد، نخ عادی
-                            threading.Thread(target=bot.process_new_updates,
-                                             args=([update],), daemon=True).start()
-                    else:
-                        logger.warning(f"webhook: bad secret token")
-                    self.send_response(200)
-                except Exception as e:
-                    logger.error(f"Webhook error: {e}")
-                    try: self.send_response(200)
-                    except Exception: pass
-                finally:
-                    try: self.end_headers()
-                    except Exception: pass
-
-            def do_GET(self):
-                self.send_response(200)
-                self.end_headers()
-                try:
-                    self.wfile.write(b"bot is running")
-                except Exception:
-                    pass
-
-            def log_message(self, fmt, *args):
-                pass
-
-        port = int(os.environ.get("PORT", "8080"))
-        print(f"🌐 webhook server on :{port}", flush=True)
-        _THServer(("0.0.0.0", port), WHHandler).serve_forever()
-    else:
-        # --- حالت POLLING (اجرای محلی) ---
-        offset = None
-        while True:
-            try:
-                updates = bot.get_updates(offset=offset, timeout=30,
-                                          allowed_updates=["message", "callback_query", "pre_checkout_query"])
-                for upd in updates:
-                    try:
-                        bot.process_new_updates([upd])
-                    except Exception as e:
-                        logger.error(f"Update processing error: {e}")
-                    # رفع باگ: upd ممکن است آبجکت Update یا dict باشد
-                    try:
-                        if isinstance(upd, dict):
-                            _uid = upd.get("update_id")
-                        else:
-                            _uid = getattr(upd, "update_id", None)
-                        if _uid is not None:
-                            offset = _uid + 1
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.error(f"Polling error, retrying in 5s: {e}")
-                time.sleep(5)
+    raise SystemExit("main.py را مستقیم اجرا نکنید؛ از run.py استفاده کنید (python run.py).")

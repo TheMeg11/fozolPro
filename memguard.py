@@ -115,6 +115,13 @@ def _loop() -> None:
     time.sleep(min(30.0, CHECK_SEC))
     while True:
         try:
+            # v5.3: بستن کانکشن‌های SQLite ترد‌های مرده (پول anyio) در هر دور — ارزان است
+            try:
+                from services import db as _db
+
+                _db.prune_dead_connections()
+            except Exception:
+                pass
             mb = rss_mb()
             peak = 0.0
             try:
@@ -135,6 +142,14 @@ def _loop() -> None:
                 if over_hard >= 2:
                     global SELF_TERMINATED
                     SELF_TERMINATED = True
+                    # v5.4: ثبت ماندگار «ری‌استارت حافظه‌ای» برای داشبورد (قبل از خاموشی)
+                    try:
+                        from services import metrics as _mx
+
+                        _mx.bump("memrestart")
+                        _mx.flush()
+                    except Exception:
+                        pass
                     log.error("🧠 ری‌استارت محترمانه به‌خاطر حافظه — SIGTERM به خود پروسه")
                     try:
                         os.kill(os.getpid(), signal.SIGTERM)

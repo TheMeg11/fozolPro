@@ -12,7 +12,7 @@
   /* ===================== Config ===================== */
   var CFG = Object.assign({
     appName: 'فضول‌یاب',
-    version: '4.7.0',
+    version: '5.4.0',
     apiBase: '/api',
     sdkGlobal: 'Bale',            // window.Bale.WebApp
     sdkFallbackGlobal: '',        // فقط برای توسعه؛ در محصول خالی بماند
@@ -23,6 +23,26 @@
     demo: 'auto',                 // auto | on | off
     requestTimeoutMs: 15000
   }, window.APP_CONFIG || {});
+
+  /* v5.3: نسخهٔ دارایی‌ها (?v=…) از آدرس خود app.js — برای بارگذاری تنبل gold.js با همان کش‌شکن */
+  var ASSET_V = (function () {
+    try { var src = (document.currentScript && document.currentScript.src) || ''; var m = src.match(/[?&]v=([^&#]+)/); return m ? m[1] : ''; } catch (e) { return ''; }
+  })();
+  var _goldLoading = null, _lastVipMe = null;
+  /* v5.3: ذرات طلایی فقط برای VIP — اسکریپت (و کانواس تمام‌صفحه) برای بقیه هرگز بارگذاری نمی‌شود */
+  function applyVip(me) {
+    _lastVipMe = me;
+    if (window.FzVip) { try { window.FzVip.apply(me); } catch (e) { /* noop */ } return; }
+    if (!(me && me.vip && me.vip.active) || _goldLoading) return;
+    _goldLoading = new Promise(function (resolve) {
+      var sc = document.createElement('script');
+      sc.src = 'gold.js' + (ASSET_V ? '?v=' + ASSET_V : '');
+      sc.async = true;
+      sc.onload = function () { if (window.FzVip) { try { window.FzVip.apply(_lastVipMe); } catch (e) { /* noop */ } } resolve(); };
+      sc.onerror = function () { _goldLoading = null; resolve(); };
+      document.body.appendChild(sc);
+    });
+  }
 
   /* ===================== Utils ===================== */
   var nf; try { nf = new Intl.NumberFormat('fa-IR'); } catch (e) { nf = null; }
@@ -308,7 +328,10 @@
     var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, CFG.requestTimeoutMs);
     // fozol-pro: خطاهای گذرا (5xx / قطعی لحظه‌ای شبکه / timeout) تا ۲ بار با فاصله دوباره تلاش
     // می‌شوند تا کاربر به‌خاطر یک اختلال لحظه‌ای صفحهٔ خطا نبیند.
-    function retryable() { return attempt < 2; }
+    // v5.3: فقط برای متدهای idempotent (GET/DELETE). تکرار خودکار POST بعد از 5xx/timeout
+    // می‌توانست پخش همگانی، چرخش گردونه، فاکتور یا پیام را «دوبار» اجرا کند.
+    var idempotent = method === 'GET' || method === 'DELETE';
+    function retryable() { return idempotent && attempt < 2; }
     function retry() { return sleep(800 * (attempt + 1)).then(function () { return realFetch(method, path, body, attempt + 1); }); }
     return fetch(CFG.apiBase + path, {
       method: method,
@@ -329,8 +352,7 @@
     }, function (e) {
       clearTimeout(timer);
       var isAbort = e && e.name === 'AbortError';
-      var safeMethod = method === 'GET' || method === 'DELETE';
-      if (retryable() && (safeMethod || isAbort)) return retry();
+      if (retryable()) return retry();
       throw new ApiError(isAbort ? 'TIMEOUT' : 'NETWORK', isAbort ? ERR_TEXT.TIMEOUT : ERR_TEXT.NETWORK);
     });
   }
@@ -716,7 +738,25 @@
         }
         return { users_total: 48210, users_today: 312, users_active_today: 1893, users_week: 2140, vip_active: 1873, revenue_month: 61450000, snoops_today: 9832, anon_today: 41, open_tickets: db.tickets.filter(function (x) { return x.status === 'open'; }).length, banned: 214, chart: chart,
           users_month: 5480, users_week_active: 9120, vip_expiring_7d: 128, vip_revenue_total: 412300000, vip_ever: 3120, traps_total: 8934, anon_total: 48120, spins_total: 31200,
-          challenge_status: db.challenge };
+          challenge_status: db.challenge,
+          dashboard: { generated_at: Date.now() / 1000, now_hm: '17:47', trends: [
+            { key: 'new_users', icon: '🆕', label: 'کاربر جدید', today: 58, yesterday: 139, y_same: 74, avg7: 102, avg_days: 7, kind: 'int' },
+            { key: 'active', icon: '🔥', label: 'کاربر فعال', today: 412, yesterday: 520, y_same: 389, avg7: 480, avg_days: 3, kind: 'int' },
+            { key: 'requests', icon: '📨', label: 'درخواست به ربات', today: 2310, yesterday: 3920, y_same: 2480, avg7: 3600, avg_days: 3, kind: 'int' },
+            { key: 'clicks', icon: '🎯', label: 'کلیک روی تله', today: 87, yesterday: 241, y_same: 120, avg7: 218, avg_days: 7, kind: 'int' },
+            { key: 'anon', icon: '💬', label: 'پیام ناشناس', today: 21, yesterday: 30, y_same: 18, avg7: 27, avg_days: 7, kind: 'int' },
+            { key: 'purchases', icon: '🛒', label: 'خرید', today: 0, yesterday: 2, y_same: 1, avg7: 1.3, avg_days: 7, kind: 'int' },
+            { key: 'revenue', icon: '💰', label: 'درآمد (تومان)', today: 0, yesterday: 98000, y_same: 49000, avg7: 23900, avg_days: 7, kind: 'money' },
+            { key: 'errors', icon: '🧯', label: 'خطای ربات', today: 0, yesterday: 3, y_same: 1, avg7: 2, avg_days: 3, kind: 'int' },
+            { key: 'ram', icon: '🧠', label: 'میانگین رم (MB)', today: 218, yesterday: 205, y_same: null, avg7: 210, avg_days: 3, kind: 'mb' },
+            { key: 'cost', icon: '💵', label: 'هزینهٔ سرور', today: 0.097, yesterday: 0.11, y_same: null, avg7: 0.1, avg_days: 3, kind: 'usd' }],
+            users: { total: 12927, wau: 2100, mau: 4200, active_data_days: 3, return_rate: 63, new_activated_today: 12, src_ref: 10361, src_wel: 33, src_org: 779, src_other: 1754, streak_active: 310, bonus_streak_alive: 140, bonus_streak_best: 41, requested: 9800, banned: 12, banned_admin: 4, blocked_bot: 7152 },
+            vip: { active: 467, expiring_2d: 173, expiring_7d: 240, revenue_30d: 450000, purchases_30d: 9, revenue_total: 3250000, purchases_total: 71, revenue_bot: 2900000, revenue_app: 350000, reveals_total: 54, reveal_paid: 20, reveal_revenue: 200000, saveface_paid: 6, saveface_revenue: 60000, buyers: 58, conversion: 0.4, gift_codes: 2, gift_used: 58, gift_active: 1 },
+            traps: { clicks_total: 30412, snoopers_total: 10514, snoopers_today: 61, owners_total: 3120, traps_total: 893, spins_total: 3120, spins_today: 44, anon_30d: 380 },
+            top_today: [{ id: 1, name: 'سارا', snoops: 9, vip: true }, { id: 2, name: 'علی', snoops: 6, vip: false }],
+            system: { channels: 1, channel_joins_total: 5829, open_tickets: 2, last_broadcast: { text: '5202/5829 (89%)', at: Date.now() / 1000 - 86400 * 2, via: 'ربات' } },
+            runtime: { err_total: 0, broken_channels: [], month_requests: 83486, top_button: { label: 'تله من', count: 15230 }, requested_total: 9800 },
+            server: { mem_now_mb: 218, mem_src: 'cgroup', mem_limit_mb: 512, mem_min_mb: 140, mem_avg_mb: 205, mem_max_mb: 312, cpu_avg: 0.041, cpu_max: 0.31, covered_h: 24, disk_gb: 0.05, db_mb: 45, uptime_sec: 3 * 86400 + 4 * 3600, boots_today: 0, memrestarts_today: 0, source: 'local', railway_configured: false, cost: { ram: 0.067, cpu: 0.027, disk: 0.0003, egress: null, total: 0.094 }, cost_month: 2.83, plan_credit: 5, soft_mb: 320, hard_mb: 440 } } };
       }],
       ['GET', /^\/admin\/challenge$/, function () { requireAdmin(); return clone(db.challenge); }],
       ['POST', /^\/admin\/challenge$/, function (b) {
@@ -911,11 +951,15 @@
       this.root = root;
       this.pages = h('div', { class: 'pages' });
       this.nav = h('nav', { class: 'nav', role: 'tablist', 'aria-label': 'منوی اصلی' });
-      this.toasts = h('div', { class: 'toast-wrap', 'aria-live': 'polite' });
-      this.offline = h('div', { class: 'offline-bar' }, icon('wifiOff'), 'اتصال اینترنت قطع است؛ برخی بخش‌ها در دسترس نیستند');
+      this.toasts = h('div', { class: 'toast-wrap', 'aria-live': 'polite', role: 'status' });
+      this.offline = h('div', { class: 'offline-bar', role: 'alert' }, icon('wifiOff'), 'اتصال اینترنت قطع است؛ برخی بخش‌ها در دسترس نیستند');
       root.appendChild(this.pages); root.appendChild(this.nav); root.appendChild(this.toasts); root.appendChild(this.offline);
       var self = this;
-      window.addEventListener('online', function () { State.online = true; self.offline.classList.remove('show'); toast('اتصال برقرار شد', 'success'); });
+      window.addEventListener('online', function () {
+        State.online = true; self.offline.classList.remove('show'); toast('اتصال برقرار شد', 'success');
+        /* v5.3 (D1): صفحهٔ فعلی خودکار تازه شود — قبلاً خطای آفلاین روی صفحه می‌ماند تا کاربر دستی تلاش کند */
+        try { var cur = Router.current; if (cur && cur.ctx && cur.ctx.alive && cur.ctx.reload) cur.ctx.reload(); } catch (e) { /* noop */ }
+      });
       window.addEventListener('offline', function () { State.online = false; self.offline.classList.add('show'); });
       if (!navigator.onLine) this.offline.classList.add('show');
     },
@@ -1060,6 +1104,14 @@
       o.action ? h('button', { class: 'btn btn-secondary', onclick: o.action.onClick }, o.action.icon ? icon(o.action.icon) : null, o.action.text) : null);
   }
   function ErrorState(e, retry) {
+    /* v5.3 (D6): هر خطا یک اقدام مشخص دارد — نشست منقضی → بازگشت به ربات؛ نیاز به VIP → صفحهٔ VIP */
+    var code = e && e.code;
+    if (code === 'AUTH_EXPIRED' || code === 'AUTH_INVALID' || code === 'AUTH_REQUIRED') {
+      return Empty({ icon: 'lock', title: 'نشست منقضی شده', text: errMsg(e), action: { text: 'بازگشت به ربات', icon: 'external', onClick: function () { Platform.openBot(''); } } });
+    }
+    if (code === 'FORBIDDEN' && /VIP/.test((e && e.message) || '')) {
+      return Empty({ icon: 'crown', title: 'ویژهٔ اعضای VIP', text: errMsg(e), action: { text: 'مشاهدهٔ پلن‌های VIP', icon: 'crown', onClick: function () { Router.go('vip'); } } });
+    }
     return Empty({ icon: e && e.code === 'OFFLINE' ? 'wifiOff' : (e && e.code === 'FORBIDDEN' ? 'lock' : 'alert'), title: e && e.code === 'OFFLINE' ? 'آفلاین هستید' : (e && e.code === 'FORBIDDEN' ? 'دسترسی محدود' : 'مشکلی پیش آمد'), text: errMsg(e), action: retry && (!e || e.code !== 'FORBIDDEN') ? { text: 'تلاش دوباره', icon: 'refresh', onClick: retry } : null });
   }
   var Skel = {
@@ -1077,7 +1129,7 @@
   function Seg(options, value, onChange) {
     var el = h('div', { class: 'seg', role: 'tablist' });
     options.forEach(function (o) {
-      el.appendChild(h('button', { class: o.id === value ? 'on' : '', onclick: function () { if (o.id === value) return; Platform.haptic('select'); onChange(o.id); } }, o.label));
+      el.appendChild(h('button', { class: o.id === value ? 'on' : '', role: 'tab', 'aria-selected': o.id === value ? 'true' : 'false', onclick: function () { if (o.id === value) return; Platform.haptic('select'); onChange(o.id); } }, o.label));
     });
     return el;
   }
@@ -1098,9 +1150,22 @@
     return h('span', { class: 'chip ' + m[1] }, m[0]);
   }
   function withLoading(btn, promise) {
-    btn.classList.add('loading'); btn.disabled = true;
-    return promise.then(function (r) { btn.classList.remove('loading'); btn.disabled = false; return r; }, function (e) { btn.classList.remove('loading'); btn.disabled = false; throw e; });
+    if (!btn) return promise;
+    btn.classList.add('loading'); btn.disabled = true; btn.setAttribute('aria-busy', 'true');
+    function done() { btn.classList.remove('loading'); btn.disabled = false; btn.removeAttribute('aria-busy'); }
+    return promise.then(function (r) { done(); return r; }, function (e) { done(); throw e; });
   }
+  /* v5.3 (D3): نگهبان سراسری دابل‌تپ — کلیک روی دکمهٔ در حال بارگذاری یا دو تپ پشت سر هم
+     (<۴۰۰ms) روی همان دکمه نادیده گرفته می‌شود؛ جلوی خرید/ارسال/ادعای جایزهٔ تکراری را می‌گیرد.
+     دکمه‌هایی که تپ سریع لازم دارند می‌توانند data-rapid بگیرند. */
+  document.addEventListener('click', function (e) {
+    var t = e.target; var b = t && t.closest ? t.closest('button, [role="button"]') : null;
+    if (!b || b.hasAttribute('data-rapid')) return;
+    if (b.classList.contains('loading') || b.getAttribute('aria-busy') === 'true') { e.preventDefault(); e.stopPropagation(); return; }
+    var now = Date.now();
+    if (b.__fzTap && now - b.__fzTap < 400) { e.preventDefault(); e.stopPropagation(); return; }
+    b.__fzTap = now;
+  }, true);
   function bytes(n) { return n > 1048576 ? fa((n / 1048576).toFixed(1)) + ' مگابایت' : fa(Math.round(n / 1024)) + ' کیلوبایت'; }
 
   /* ===================== Router (in-memory, بدون تغییر history) ===================== */
@@ -1142,6 +1207,7 @@
         }
       };
       body.addEventListener('scroll', function () { headerEl.classList.toggle('scrolled', body.scrollTop > 4); }, { passive: true });
+      if (!route.flush && !route.noPull) attachPullToRefresh(body, ctx);
       this.current = { page: page, ctx: ctx, name: entry.name };
       try { route.render(ctx); } catch (e) { console.error(e); body.replaceChildren(ErrorState(new ApiError('SERVER_ERROR', 'خطا در نمایش صفحه'), function () { Router.refresh(); })); }
       // حذف صفحات قدیمی باقی‌مانده
@@ -1155,6 +1221,38 @@
       Back.sync();
     }
   };
+
+  /* v5.3 (D2): کشیدن به پایین برای تازه‌سازی — فقط وقتی صفحه در بالاترین نقطه است.
+     آستانهٔ ۷۰px با مقاومت؛ از ctx.reload صفحه استفاده می‌کند (همان دکمهٔ «به‌روزرسانی»). */
+  function attachPullToRefresh(body, ctx) {
+    if (!('ontouchstart' in window)) return;
+    var startY = 0, pulling = false, dy = 0, busy = false, TH = 70;
+    var ind = h('div', { class: 'ptr', 'aria-hidden': 'true' }, icon('refresh'));
+    // نشانگر کنار body (نه داخلش) — صفحات با replaceChildren محتوای body را عوض می‌کنند
+    if (body.parentNode) body.parentNode.insertBefore(ind, body);
+    function setPos(px) { ind.style.transform = 'translate(-50%,' + (px - 44) + 'px) rotate(' + (px * 3) + 'deg)'; ind.style.opacity = String(Math.min(1, px / TH)); }
+    body.addEventListener('touchstart', function (e) {
+      if (busy || body.scrollTop > 0 || e.touches.length !== 1) { pulling = false; return; }
+      var tg = e.target; if (tg && tg.closest && tg.closest('textarea, input, .chat, .sheet, [data-no-pull]')) { pulling = false; return; }
+      startY = e.touches[0].clientY; pulling = true; dy = 0; ind.style.top = body.offsetTop + 'px';
+    }, { passive: true });
+    body.addEventListener('touchmove', function (e) {
+      if (!pulling) return;
+      dy = e.touches[0].clientY - startY;
+      if (dy <= 0 || body.scrollTop > 0) { dy = 0; setPos(0); return; }
+      var px = Math.min(110, dy * 0.5); ind.classList.add('show'); ind.classList.toggle('ready', px >= TH); setPos(px);
+    }, { passive: true });
+    body.addEventListener('touchend', function () {
+      if (!pulling) return; pulling = false;
+      var px = Math.min(110, dy * 0.5);
+      if (px >= TH && ctx.alive && ctx.reload) {
+        busy = true; ind.classList.add('spin'); setPos(TH); Platform.haptic('light');
+        var p; try { p = ctx.reload(); } catch (e) { p = null; }
+        Promise.resolve(p).then(fin, fin);
+      } else fin();
+      function fin() { busy = false; ind.classList.remove('show', 'ready', 'spin'); setPos(0); }
+    }, { passive: true });
+  }
 
   /* داده با کش (stale-while-revalidate) */
   function useData(ctx, key, fetcher, render, skeleton) {
@@ -1175,7 +1273,7 @@
     run();
     return run;
   }
-  function refreshMe() { return api('/me').then(function (me) { State.me = me; Cache.set('me', me); if (window.FzVip) window.FzVip.apply(me); return me; }, function () { return State.me; }); }
+  function refreshMe() { return api('/me').then(function (me) { State.me = me; Cache.set('me', me); applyVip(me); return me; }, function () { return State.me; }); }
 
   /* ===================== Shared sheets ===================== */
   function vipUpsell(reason) {
@@ -1204,7 +1302,7 @@
             infoRow('گزینهٔ ۲ — باز کردن همین یک نفر', 'پرداخت ' + fa(price) + ' تومان در چت ربات'))),
         actions: [
           { text: 'VIP می‌خواهم', icon: 'crown', onClick: function (close) { close(); Router.tab('vip'); } },
-          { text: 'باز کردن همین نفر', icon: 'unlock', onClick: function (close) { close(); Platform.openBot('reveal_' + (v.reveal_code || v.id)); } }
+          { text: 'باز کردن همین نفر', icon: 'unlock', onClick: function (close) { close(); if (v.reveal_code) Platform.openBot('reveal_' + v.reveal_code); else toast('برای این فضول لینک خرید در دسترس نیست؛ صفحه را تازه کن.', 'error'); } }
         ]
       });
       return;
@@ -1292,7 +1390,7 @@
   Router.def('home', {
     render: function (ctx) {
       ctx.header({ title: CFG.appName, subtitle: State.demo ? 'حالت دمو • داده‌های نمونه' : 'مینی‌اپ رسمی در بله', actions: [iconBtn('refresh', function () { Platform.haptic('light'); ctx.reload(); }, 'به‌روزرسانی')] });
-      useData(ctx, 'me', function () { return api('/me'); }, function (me) { State.me = me; if (window.FzVip) window.FzVip.apply(me); ctx.body.replaceChildren(HomeView(me)); }, Skel.home);
+      useData(ctx, 'me', function () { return api('/me'); }, function (me) { State.me = me; applyVip(me); ctx.body.replaceChildren(HomeView(me)); }, Skel.home);
     }
   });
   function HomeView(me) {
@@ -1838,24 +1936,63 @@
           else ctx.body.replaceChildren(chat, lockedNode || composer);
         }
         if (o.onMeta) o.onMeta(d);
-        var j = JSON.stringify(d.messages); if (j === lastJson) return; lastJson = j; messages = d.messages; paint(messages);
+        var j = JSON.stringify(d.messages); if (j === lastJson) { idleRounds++; return; } lastJson = j; idleRounds = 0; messages = d.messages; paint(messages);
       }, function (e) {
         if (!ctx.alive) return;
         if (!silent || lastJson === null) ctx.body.replaceChildren(ErrorState(e, function () { ctx.body.replaceChildren(Skel.chat()); load(); }));
       });
     }
+    /* v5.3 (D5): وضعیت ارسال — «در حال ارسال…» و در صورت خطا «ارسال نشد» + دکمهٔ تلاش دوباره
+       (قبلاً حباب حذف می‌شد و متن به کادر برمی‌گشت؛ کاربر نمی‌فهمید چه شد). */
+    var sending = false;
+    function deliver(text, b) {
+      sending = true;
+      b.classList.remove('failed'); b.classList.add('pending');
+      var st = b.querySelector('.send-state'); if (st) st.remove();
+      b.appendChild(h('div', { class: 'send-state small muted', role: 'status' }, 'در حال ارسال…'));
+      o.send(text).then(function () {
+        sending = false; idleRounds = 0;
+        var s2 = b.querySelector('.send-state'); if (s2) s2.remove();
+        lastJson = null; load(true);
+      }, function (e) {
+        sending = false;
+        b.classList.remove('pending'); b.classList.add('failed');
+        var s3 = b.querySelector('.send-state'); if (s3) s3.remove();
+        b.appendChild(h('div', { class: 'send-state small', role: 'alert' },
+          h('span', { class: 'text-danger' }, '⚠️ ارسال نشد'), ' ',
+          h('button', { class: 'btn-link', type: 'button', 'aria-label': 'تلاش دوباره برای ارسال', onclick: function () { if (!sending) deliver(text, b); } }, 'تلاش دوباره'),
+          ' · ',
+          h('button', { class: 'btn-link', type: 'button', 'aria-label': 'حذف پیام ارسال‌نشده', onclick: function () { b.remove(); } }, 'حذف')));
+        toast(errMsg(e), 'error');
+      });
+    }
     function send() {
-      var text = ta.value.trim(); if (!text) return;
+      var text = ta.value.trim(); if (!text || sending) return;   // v5.3 (D3): ضد ارسال دوباره با دابل‌تپ
       Platform.haptic('light');
       var temp = { from: o.mine, text: text, created_at: new Date().toISOString() };
       var b = bubble(temp, true); chat.appendChild(b); chat.scrollTop = chat.scrollHeight;
       ta.value = ''; ta.dispatchEvent(new Event('input'));
-      o.send(text).then(function () { lastJson = null; load(true); }, function (e) { b.remove(); ta.value = text; ta.dispatchEvent(new Event('input')); toast(errMsg(e), 'error'); });
+      deliver(text, b);
     }
+    /* v5.3 (C6): پولینگ تطبیقی — وقتی چیزی تغییر نمی‌کند فاصله تا ۴ برابر (سقف ۶۰ ثانیه) زیاد
+       می‌شود و با پیام تازه/ارسال/بازگشت به صفحه دوباره سریع می‌شود. درخواست‌های بیهوده ~۶۰٪ کمتر. */
+    var idleRounds = 0, timer = null, basePoll = o.pollMs || 15000;
+    function nextDelay() { return Math.min(60000, basePoll * Math.min(4, 1 + Math.floor(idleRounds / 2))); }
+    function schedule() {
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        if (!ctx.alive) return;
+        if (document.visibilityState === 'visible' && State.online) load(true).then(schedule, schedule);
+        else schedule();
+      }, nextDelay());
+    }
+    function onVis() { if (document.visibilityState === 'visible' && ctx.alive) { idleRounds = 0; load(true); schedule(); } }
+    document.addEventListener('visibilitychange', onVis);
+    ta.addEventListener('focus', function () { if (idleRounds > 1) { idleRounds = 0; schedule(); } });
     load();
-    var timer = setInterval(function () { if (document.visibilityState === 'visible' && State.online) load(true); }, o.pollMs || 15000);
-    ctx.onCleanup(function () { clearInterval(timer); });
-    ctx.reload = function () { lastJson = null; return load(true); };
+    schedule();
+    ctx.onCleanup(function () { clearTimeout(timer); document.removeEventListener('visibilitychange', onVis); });
+    ctx.reload = function () { lastJson = null; idleRounds = 0; return load(true); };
   }
 
   /* ===================== Page: Support ===================== */
@@ -1961,7 +2098,7 @@
   Router.def('profile', {
     render: function (ctx) {
       ctx.header({ title: 'پروفایل' });
-      useData(ctx, 'me', function () { return api('/me'); }, function (me) { State.me = me; if (window.FzVip) window.FzVip.apply(me); draw(me); }, Skel.cards);
+      useData(ctx, 'me', function () { return api('/me'); }, function (me) { State.me = me; applyVip(me); draw(me); }, Skel.cards);
       function draw(me) {
         var u = me.user, full = (u.first_name || '') + ' ' + (u.last_name || ''), w = h('div', null);
         w.appendChild(h('div', { class: 'card center', style: 'padding:22px 16px' },
@@ -2135,7 +2272,7 @@
         /* v4.6: کلید نمایش نام به کارت اطلاعات شخص (نوار پایین) منتقل شد — کارت مستقل حذف شد */
         if (!d.items.length) {
           w.appendChild(h('div', { class: 'lb-sheet' }, h('div', { class: 'lb-sheet-grip' }),
-            Empty({ icon: 'trophy', title: 'هنوز رتبه‌ای ثبت نشده', text: 'با جمع‌کردن XP از گردونه و فعالیت‌ها، خودت را بالای جدول بگذار!' })));
+            Empty({ icon: 'trophy', title: 'هنوز رتبه‌ای ثبت نشده', text: 'با جمع‌کردن XP از گردونه و فعالیت‌ها، خودت را بالای جدول بگذار!', action: { text: 'رفتن به گردونه', icon: 'bolt', onClick: function () { Router.go('wheel'); } } })));
           ctx.body.replaceChildren(w);
           return;
         }
@@ -2509,7 +2646,7 @@
         if (spinning) return;
         var w = h('div', null);
         if (d.disabled) {
-          ctx.body.replaceChildren(h('div', { class: 'card' }, Empty({ icon: 'lock', title: 'گردونه شانس فعلاً غیرفعال است', text: 'به‌زودی توسط مدیریت فعال می‌شود.' })));
+          ctx.body.replaceChildren(h('div', { class: 'card' }, Empty({ icon: 'lock', title: 'گردونه شانس فعلاً غیرفعال است', text: 'به‌زودی توسط مدیریت فعال می‌شود.' , action: { text: 'بازگشت به خانه', icon: 'home', onClick: function () { Router.tab('home'); } } })));
           return;
         }
         /* v4.7 (همگام‌سازی با پنل شیشه‌ای): چرخ شانس فقط برای VIP — همان ربات */
@@ -2648,7 +2785,7 @@
           kpi('bolt', 'accent', fa(s.users_active_today), 'فعال امروز'),
           kpi('plus', 'info', '+' + fa(s.users_today), 'جدید امروز'),
           kpi('crown', 'gold', fa(s.vip_active), 'VIP فعال'),
-          kpi('receipt', 'warn', fa(Math.round(s.revenue_month / 1e6 * 10) / 10) + ' م', 'درآمد ماه (تومان)'),
+          kpi('receipt', 'warn', fa(Math.round(s.revenue_month / 1e6 * 10) / 10) + ' م', 'درآمد ۳۰ روز (تومان)'),
           kpi('eye', '', fa(s.snoops_today), 'فضولی امروز'),
           kpi('message', 'info', fa(s.anon_today), 'پیام ناشناس امروز'),
           kpi('inbox', 'danger', fa(s.open_tickets), 'تیکت باز')));
@@ -2664,7 +2801,7 @@
           ListItem({ icon: 'receipt', title: 'تراکنش‌ها', sub: 'خریدها، هدیه‌ها و تغییرهای VIP', onClick: function () { Router.go('admin-transactions'); } }),
           ListItem({ icon: 'palette', tone: 'info', title: 'تنظیمات و قابلیت‌ها', sub: 'لیدربورد، گردونه، قیمت‌ها، حالت‌ها', onClick: function () { Router.go('admin-settings'); } }),
           ListItem({ icon: 'target', tone: 'warn', title: 'چالش فضول‌گیر برتر', sub: 'شروع، جدول برترین‌ها و جایزه — هم‌گام با ربات', onClick: function () { Router.go('admin-challenge'); } }),
-          ListItem({ icon: 'users', tone: '', title: 'آمار تفصیلی', sub: 'کاربران، VIP و آرشیو روزانه', onClick: function () { Router.go('admin-stats'); } }),
+          ListItem({ icon: 'chart', tone: 'accent', title: 'داشبورد آمار', sub: 'روند امروز/دیروز/۷ روز، درآمد، سرور Railway و هزینه', onClick: function () { Router.go('admin-stats'); } }),
           ListItem({ icon: 'megaphone', tone: 'info', title: 'کانال‌های اجباری', sub: 'مدیریت عضویت اجباری (اد اجباری)', onClick: function () { Router.go('admin-channels'); } }),
           ListItem({ icon: 'database', tone: 'danger', title: 'بکاپ و بازیابی', sub: 'بکاپ شبانه و دستی دیتابیس', onClick: function () { Router.go('admin-backup'); } })));
         ctx.body.replaceChildren(w);
@@ -2881,7 +3018,7 @@
                 if (!ctx.alive) return; job = j; var c = ctx.body.querySelector('#job-card'); if (c) c.replaceWith(jobCard(j));
                 if (j.status !== 'running') { clearInterval(iv); toast('پخش همگانی تکمیل شد', 'success'); Cache.del('admin:bmeta'); job = null; setTimeout(function () { if (ctx.alive) ctx.reload(); }, 1200); }
               }, function () { /* تلاش بعدی */ });
-            }, 1500);
+            }, 3000);   // v5.3: ۱.۵←۳ ثانیه — نصف درخواست‌ها در طول پخش
             ctx.onCleanup(function () { clearInterval(iv); });
           }, function (e) { MainAction.loading(false); toast(errMsg(e), 'error'); });
         });
@@ -2894,7 +3031,7 @@
     render: function (ctx) {
       ctx.header({ title: 'صندوق پشتیبانی', actions: [iconBtn('refresh', function () { ctx.reload(); }, 'به‌روزرسانی')] });
       useData(ctx, 'admin:tickets', function () { return api('/admin/tickets'); }, function (d) {
-        if (!d.items.length) { ctx.body.replaceChildren(Empty({ icon: 'inbox', title: 'صندوق خالی است', text: 'فعلاً پیام پشتیبانی جدیدی نیست.' })); return; }
+        if (!d.items.length) { ctx.body.replaceChildren(Empty({ icon: 'inbox', title: 'صندوق خالی است', text: 'فعلاً پیام پشتیبانی جدیدی نیست.', action: { text: 'به‌روزرسانی', icon: 'refresh', onClick: function () { ctx.reload(); } } })); return; }
         ctx.body.replaceChildren(h('div', { class: 'list' }, d.items.map(function (t) {
           return ListItem({ lead: Avatar(t.name, t.user_id, { photo: t.avatar, vip: t.is_vip }), title: t.name + (t.is_vip ? ' ⚡️' : ''), sub: (t.last_from === 'admin' ? 'شما: ' : '') + t.last_text, end: h('div', { style: 'display:flex;flex-direction:column;align-items:flex-end;gap:4px' }, h('span', null, ago(t.last_at)), t.unread ? h('span', { class: 'chip danger' }, fa(t.unread)) : statusChip(t.status)), noChev: true, onClick: function () { Router.go('admin-ticket', { user_id: t.user_id, name: t.name }); } });
         })));
@@ -2982,49 +3119,139 @@
     }
   });
 
-  /* ===================== v4.3: Admin: آمار تفصیلی (هم‌ارز آمار کاربران/VIP + آرشیو روزانه پنل شیشه‌ای) ===================== */
+  /* ===================== v5.4: Admin: داشبورد «روند و مقایسه» — همان داده‌های داشبورد ربات ===================== */
+  function usd(x) {
+    if (x === null || x === undefined) return '—';
+    x = +x; if (x > 0 && x < 0.01) return '<' + faDigits('0.01').replace('.', '٫') + '$';
+    return faDigits(x.toFixed(x >= 0.1 ? 2 : 3)).replace('.', '٫') + '$';
+  }
+  function decFa(x, n) { return faDigits((+x || 0).toFixed(n)).replace('.', '٫'); }
+  function durFa(sec) {
+    sec = Math.max(0, Math.floor(sec || 0)); var d = Math.floor(sec / 86400), hh = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+    if (d) return fa(d) + ' روز و ' + fa(hh) + ' ساعت'; if (hh) return fa(hh) + ' ساعت و ' + fa(m) + ' دقیقه'; return fa(m) + ' دقیقه';
+  }
+  function trendVal(v, kind) { if (v === null || v === undefined) return '—'; return kind === 'usd' ? usd(v) : fa(Math.round(v)); }
+  var TREND_BAD_UP = { errors: 1, boots: 1, ram: 1, cost: 1 };
+  function trendDelta(t) {
+    if (t.kind === 'mb' || t.kind === 'usd' || t.y_same === null || t.y_same === undefined) return null;
+    var a = +t.today || 0, b = +t.y_same || 0, txt, up;
+    if (b === 0) { if (a <= 0) return null; txt = '▲'; up = true; }
+    else { var p = Math.round((a - b) * 100 / b); if (p === 0) return h('span', { class: 'dl' }, '±۰٪'); up = p > 0; txt = (up ? '▲' : '▼') + fa(Math.abs(p)) + '٪'; }
+    var good = TREND_BAD_UP[t.key] ? !up : up;
+    return h('span', { class: 'dl ' + (good ? 'good' : 'bad') }, txt);
+  }
   Router.def('admin-stats', {
     admin: true, tab: 'admin',
     render: function (ctx) {
-      ctx.header({ title: 'آمار تفصیلی', subtitle: 'هم‌ارز آمار کاربران و آمار VIP پنل شیشه‌ای', actions: [iconBtn('refresh', function () { ctx.reload(); }, 'به‌روزرسانی')] });
+      ctx.header({ title: 'داشبورد آمار', subtitle: 'روند و مقایسه — همان داشبورد ربات', actions: [iconBtn('refresh', function () { Cache.del('admin:stats'); ctx.reload(); }, 'به‌روزرسانی')] });
       useData(ctx, 'admin:stats', function () { return api('/admin/stats'); }, function (s) {
-        function kpi(ic, tone, v, k) { return h('div', { class: 'kpi' }, h('div', { class: 'top' }, h('div', { class: 'li-icon ' + tone }, icon(ic))), h('div', { class: 'v' }, v), h('div', { class: 'k' }, k)); }
-        var conv = s.users_total ? Math.round(s.vip_ever * 100 / s.users_total) : 0;
+        var d = s.dashboard || {}, u = d.users || {}, v = d.vip || {}, tp = d.traps || {}, sy = d.system || {}, sv = d.server || {}, rt = d.runtime || {};
         var w = h('div', null);
-        w.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-title' }, icon('users'), 'کاربران'),
-          h('div', { class: 'kpi-grid', style: 'margin-top:8px' },
-            kpi('users', '', fa(s.users_total), 'کل کاربران'),
-            kpi('plus', 'info', fa(s.users_month), '۳۰ روز اخیر'),
-            kpi('bolt', 'accent', fa(s.users_active_today), 'فعال امروز'),
-            kpi('clock', '', fa(s.users_week_active), 'فعال این هفته'),
-            kpi('ban', 'danger', fa(s.banned), 'مسدود'),
-            kpi('target', '', fa(s.traps_total), 'کل تله‌ها'))));
-        w.appendChild(h('div', { class: 'card mt-12' }, h('div', { class: 'card-title' }, icon('crown'), 'VIP و مالی'),
-          h('div', { class: 'kpi-grid', style: 'margin-top:8px' },
-            kpi('crown', 'gold', fa(s.vip_active), 'VIP فعال'),
-            kpi('clock', 'warn', fa(s.vip_expiring_7d), 'انقضا تا ۷ روز'),
-            kpi('users', 'info', fa(s.vip_ever), 'خریدار (کل)'),
-            kpi('chart', 'accent', fa(conv) + '٪', 'نرخ تبدیل'),
-            kpi('receipt', 'gold', toman(s.revenue_month), 'درآمد ماه'),
-            kpi('receipt', '', toman(s.vip_revenue_total), 'درآمد کل'))));
-        w.appendChild(h('div', { class: 'card mt-12' }, h('div', { class: 'card-title' }, icon('message'), 'فعالیت'),
-          h('div', { class: 'kpi-grid', style: 'margin-top:8px' },
-            kpi('eye', '', fa(s.snoops_today), 'فضولی امروز'),
-            kpi('eye', 'info', fa(s.snoops_total == null ? '—' : s.snoops_total), 'کل فضول‌ها'),
-            kpi('message', 'gold', fa(s.anon_total), 'کل پیام ناشناس'),
-            kpi('gift', 'warn', fa(s.spins_total), 'چرخش گردونه'))));
+        function rowsCard(ic, title, rows, extra) {
+          var list = rows.filter(Boolean).map(function (r) { return h('div', { class: 'info-row' }, h('span', null, r[0]), h('span', null, r[1])); });
+          return h('div', { class: 'card mt-12' }, h('div', { class: 'card-title' }, icon(ic), title), h('div', { class: 'info-rows' }, list), extra || null);
+        }
+        /* --- روند امروز --- */
+        var grid = [h('div', { class: 'th' }, 'شاخص'), h('div', { class: 'th' }, 'امروز'), h('div', { class: 'th' }, 'دیروز'), h('div', { class: 'th' }, 'م۷')];
+        (d.trends || []).forEach(function (t) {
+          var avg = trendVal(t.avg7, t.kind) + (t.avg7 !== null && t.avg7 !== undefined && t.avg_days && t.avg_days < 7 ? ' (' + fa(t.avg_days) + 'ر)' : '');
+          grid.push(h('div', { class: 'lbl' }, h('span', { class: 'emo' }, t.icon), t.label),
+            h('div', { class: 'now' }, h('b', null, trendVal(t.today, t.kind)), trendDelta(t)),
+            h('div', null, trendVal(t.yesterday, t.kind)), h('div', null, avg));
+        });
+        w.appendChild(h('div', { class: 'card' },
+          h('div', { class: 'row between' }, h('div', { class: 'card-title', style: 'margin:0' }, icon('chart'), 'روند امروز'), h('span', { class: 'chip' }, 'ساعت ' + faDigits(d.now_hm || ''))),
+          h('div', { class: 'small muted mt-8' }, 'امروز تا این لحظه · دیروز کامل · م۷ = میانگین ۷ روز کامل. ▲▼ نسبت به دیروز تا همین ساعت.'),
+          h('div', { class: 'trend mt-8' }, grid)));
+        /* --- سرور Railway --- */
+        if (sv && sv.mem_limit_mb) {
+          var lim = sv.mem_limit_mb || 512, pct = Math.min(100, Math.round((sv.mem_now_mb || 0) * 100 / lim)), c = sv.cost || {};
+          var src = sv.source === 'railway' ? 'API رسمی Railway ✅ (' + durFa(sv.railway_age_sec) + ' پیش)'
+            : (sv.railway_configured && sv.railway_error ? 'API خطا داد (' + sv.railway_error + ') — اندازه‌گیری داخلی' : 'اندازه‌گیری داخلی — برای عدد دقیق RAILWAY_API_TOKEN را ست کنید');
+          var memCard = h('div', { class: 'card mt-12' },
+            h('div', { class: 'row between' }, h('div', { class: 'card-title', style: 'margin:0' }, icon('database'), 'سرور Railway'), h('span', { class: 'chip ' + (pct >= 85 ? 'danger' : pct >= 65 ? 'warn' : 'accent') }, fa(pct) + '٪ رم')),
+            h('div', { class: 'row between mt-8' }, h('b', null, 'رم الان: ' + fa(Math.round(sv.mem_now_mb || 0)) + ' از ' + fa(Math.round(lim)) + ' MB'), h('span', { class: 'small muted' }, sv.mem_src === 'cgroup' ? 'کانتینر' : 'پروسه')),
+            h('div', { class: 'progress mt-8' }, h('i', { style: 'width:' + pct + '%' })),
+            h('div', { class: 'info-rows mt-8' },
+              h('div', { class: 'info-row' }, h('span', null, '۲۴ ساعت (کمینه · میانگین · بیشینه)'), h('span', null, fa(Math.round(sv.mem_min_mb || 0)) + ' · ' + fa(Math.round(sv.mem_avg_mb || 0)) + ' · ' + fa(Math.round(sv.mem_max_mb || 0)) + ' MB' + ((sv.covered_h || 0) < 23 ? ' (پوشش ' + fa(Math.round(sv.covered_h || 0)) + 'س)' : ''))),
+              h('div', { class: 'info-row' }, h('span', null, 'CPU (میانگین · بیشینه)'), h('span', { class: 'ltr' }, decFa(sv.cpu_avg, 3) + ' · ' + decFa(sv.cpu_max, 2) + ' vCPU')),
+              h('div', { class: 'info-row' }, h('span', null, 'پیش‌بینی هزینهٔ ۲۴ ساعت'), h('span', null, usd(c.total))),
+              h('div', { class: 'info-row' }, h('span', null, 'ریز هزینه (رم · CPU · دیسک · ترافیک)'), h('span', null, usd(c.ram) + ' · ' + usd(c.cpu) + ' · ' + usd(c.disk) + ' · ' + (c.egress === null || c.egress === undefined ? 'نامعلوم' : usd(c.egress)))),
+              h('div', { class: 'info-row' }, h('span', null, 'پیش‌بینی ماه (۳۰ روز)'), h('span', null, '≈ ' + usd(sv.cost_month) + (sv.plan_credit ? ' از ' + usd(sv.plan_credit) + ' اعتبار' : ''))),
+              h('div', { class: 'info-row' }, h('span', null, 'دیتابیس · دیسک'), h('span', null, fa(Math.round(sv.db_mb || 0)) + 'MB · ' + decFa(sv.disk_gb, 2) + 'GB')),
+              h('div', { class: 'info-row' }, h('span', null, 'آپ‌تایم · ری‌استارت امروز'), h('span', null, durFa(sv.uptime_sec) + ' · ' + fa(sv.boots_today || 0) + (sv.memrestarts_today ? ' (حافظه‌ای ' + fa(sv.memrestarts_today) + ')' : ''))),
+              h('div', { class: 'info-row' }, h('span', null, 'گارد حافظه (نرم/سخت)'), h('span', null, fa(Math.round(sv.soft_mb || 0)) + ' / ' + fa(Math.round(sv.hard_mb || 0)) + ' MB'))),
+            h('div', { class: 'small muted mt-8' }, 'منبع ۲۴ساعت و هزینه: ' + src));
+          w.appendChild(memCard);
+        }
+        /* --- کاربران --- */
+        if (u.total !== undefined) {
+          w.appendChild(rowsCard('users', 'کاربران', [
+            ['کل کاربران', fa(u.total)],
+            ['فعال ۷ روز · ۳۰ روز', fa(u.wau || 0) + ' · ' + fa(u.mau || 0) + ((u.active_data_days || 0) < 30 ? ' (از ' + fa(u.active_data_days || 0) + ' روز داده)' : '')],
+            ['بازگشتی امروز (عضو قبل از امروز)', u.return_rate === null || u.return_rate === undefined ? '—' : fa(u.return_rate) + '٪'],
+            ['جدیدهای امروز که فضولی کردند', fa(u.new_activated_today || 0)],
+            ['منبع: تله · خوش‌آمد · مستقیم · مینی‌اپ/نامشخص', fa(u.src_ref || 0) + ' · ' + fa(u.src_wel || 0) + ' · ' + fa(u.src_org || 0) + ' · ' + fa(u.src_other || 0)],
+            ['استریک ورود فعال (۲+ روز)', fa(u.streak_active || 0)],
+            ['استریک جایزه (زنده · رکورد)', fa(u.bonus_streak_alive || 0) + ' · ' + fa(u.bonus_streak_best || 0) + ' روز'],
+            ['حداقل یک درخواست به ربات', fa(rt.requested_total || u.requested || 0)],
+            ['مسدود (توسط ادمین)', fa(u.banned || 0) + ' (' + fa(u.banned_admin || 0) + ')'],
+            ['ربات را بلاک کرده', fa(u.blocked_bot || 0)]
+          ]));
+        }
+        /* --- VIP و درآمد --- */
+        if (v.active !== undefined) {
+          w.appendChild(rowsCard('crown', 'VIP و درآمد', [
+            ['VIP فعال', fa(v.active)],
+            ['انقضا امروز/فردا · تا ۷ روز', fa(v.expiring_2d || 0) + ' · ' + fa(v.expiring_7d || 0)],
+            ['درآمد ۳۰ روز اخیر', toman(v.revenue_30d || 0) + ' (' + fa(v.purchases_30d || 0) + ' خرید)'],
+            ['درآمد کل', toman(v.revenue_total || 0) + ' (' + fa(v.purchases_total || 0) + ' خرید)'],
+            ['سهم ربات · مینی‌اپ', fa(v.revenue_bot || 0) + ' · ' + fa(v.revenue_app || 0)],
+            ['باز کردن پروفایل (پولی · درآمد)', fa(v.reveals_total || 0) + ' (' + fa(v.reveal_paid || 0) + ' · ' + fa(v.reveal_revenue || 0) + ')'],
+            ['حفظ آبرو (تعداد · درآمد)', fa(v.saveface_paid || 0) + ' · ' + fa(v.saveface_revenue || 0)],
+            ['خریدار یکتا · نرخ تبدیل', fa(v.buyers || 0) + ' · ' + (v.conversion === undefined ? '—' : fa(v.conversion) + '٪')],
+            ['کد هدیه (فعال از کل · دفعات استفاده)', fa(v.gift_active || 0) + ' از ' + fa(v.gift_codes || 0) + ' · ' + fa(v.gift_used || 0)]
+          ]));
+        }
+        /* --- تله‌ها --- */
+        if (tp.clicks_total !== undefined) {
+          var topList = null;
+          if ((d.top_today || []).length) {
+            var medals = ['🥇', '🥈', '🥉', '🏅', '🎖'];
+            topList = h('div', { class: 'list mt-8' }, d.top_today.map(function (r, i) {
+              return ListItem({ lead: h('span', { style: 'font-size:20px' }, medals[i]), title: r.name + (r.vip ? ' 👑' : ''), sub: fa(r.snoops) + ' فضول یکتا امروز', onClick: function () { Router.go('admin-user', { id: r.id }); } });
+            }));
+          }
+          var ch = d.challenge;
+          w.appendChild(rowsCard('target', 'تله‌ها و فضول‌ها', [
+            ['کلیک کل', fa(tp.clicks_total)],
+            ['فضول یکتا (کل · امروز)', fa(tp.snoopers_total || 0) + ' · ' + fa(tp.snoopers_today || 0)],
+            ['صاحب تله · تلهٔ ساخته‌شده', fa(tp.owners_total || 0) + ' · ' + fa(tp.traps_total || 0)],
+            ['چرخش گردونه (کل · امروز)', fa(tp.spins_total || 0) + ' · ' + fa(tp.spins_today || 0)],
+            ['پیام ناشناس (۳۰ روز اخیر)', fa(tp.anon_30d || 0)],
+            ch ? ['چالش فضول‌گیر', (ch.status === 'active' ? 'در جریان — تا پایان ' : 'زمان‌بندی‌شده — تا شروع ') + (ch.remaining_sec === null || ch.remaining_sec === undefined ? '—' : durFa(ch.remaining_sec))] : null
+          ], topList ? h('div', null, h('div', { class: 'small muted mt-12' }, 'تله‌های برتر امروز'), topList) : null));
+        }
+        /* --- سیستم --- */
+        var lb = sy.last_broadcast;
+        w.appendChild(rowsCard('palette', 'سیستم', [
+          ['جوین اجباری (کانال · عضویت کل)', fa(sy.channels || 0) + ' · ' + fa(sy.channel_joins_total || 0)],
+          ['کانال مشکل‌دار', (rt.broken_channels || []).length ? rt.broken_channels.join('، ') : 'ندارد ✅'],
+          rt.err_total !== undefined ? ['خطاها از آخرین ری‌استارت', rt.err_total ? fa(rt.err_total) + ' — ' + String(rt.err_last || '').slice(0, 50) : 'ندارد ✅'] : null,
+          rt.top_button ? ['پرکلیک‌ترین دکمه', '«' + rt.top_button.label + '» (' + fa(rt.top_button.count) + ')'] : null,
+          rt.month_requests !== undefined && rt.month_requests !== null ? ['درخواست‌های این ماه (شمسی)', fa(rt.month_requests)] : null,
+          ['آخرین پخش همگانی', lb ? faDigits(lb.text) + ' (' + lb.via + ')' + (lb.at ? ' — ' + jdate(new Date(lb.at * 1000).toISOString(), true) : '') : 'ندارد'],
+          ['تیکت باز پشتیبانی', fa(sy.open_tickets || 0)]
+        ]));
+        /* --- آرشیو ۱۴ روز --- */
         w.appendChild(SectionTitle('آرشیو روزانه (۱۴ روز اخیر)'));
         var rows = [h('div', { class: 'info-row', style: 'font-weight:800' }, h('span', null, 'تاریخ'), h('span', { class: 'ltr' }, 'کاربر / فضول / ناشناس'))];
-        s.chart.slice().reverse().forEach(function (p) {
+        (s.chart || []).slice().reverse().forEach(function (p) {
           rows.push(h('div', { class: 'info-row' }, h('span', null, jdate(p.day_local || p.date)),
             h('span', { class: 'ltr' }, fa(p.new_users) + ' / ' + fa(p.snoops) + ' / ' + fa(p.anon || 0))));
         });
         w.appendChild(h('div', { class: 'card info-rows' }, rows));
-        w.appendChild(h('div', { class: 'small muted mt-8', style: 'margin:0 4px 12px' }, 'هر ردیف: کاربران جدید، فضول‌های ثبت‌شده و پیام‌های ناشناس آن روز.'));
-        if (s.challenge_status && s.challenge_status.status !== 'idle') {
-          var cs = s.challenge_status;
-          w.appendChild(h('div', { class: 'alert warn mt-12' }, icon('target'), h('div', null, 'چالش فضول‌گیر برتر در جریان است: ', h('b', null, CHALLENGE_FA[cs.status] || cs.status), ' — ', h('a', { href: '#', onclick: function (e) { e.preventDefault(); Router.go('admin-challenge'); } }, 'مدیریت چالش ←'))));
-        }
+        w.appendChild(h('div', { class: 'small muted mt-8', style: 'margin:0 4px 12px' }, 'هر ردیف: کاربران جدید، کلیک‌های ثبت‌شده روی تله‌ها و پیام‌های ناشناس آن روز (تقویم تهران).' + (d.generated_at ? ' بروزرسانی: ' + jdate(new Date(d.generated_at * 1000).toISOString(), true) : '')));
         ctx.body.replaceChildren(w);
       }, Skel.cards);
     }
@@ -3383,7 +3610,7 @@
         if (fatalEl) { fatalEl.remove(); fatalEl = null; }
         api('/me').then(function (me) {
           State.me = me; Cache.set('me', me);
-          if (window.FzVip) window.FzVip.apply(me);
+          applyVip(me);
           Shell.renderNav();
           var p = Platform.startParam(), tabs = ['home', 'snoop', 'vip', 'chat', 'support', 'profile', 'admin'];
           Router.start(tabs.indexOf(p) >= 0 && (p !== 'admin' || me.is_admin) ? p : 'home');

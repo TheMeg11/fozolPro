@@ -21,7 +21,9 @@ import settings
 log = logging.getLogger("db")
 _local = threading.local()
 _write_lock = threading.RLock()
-_all_conns: list[sqlite3.Connection] = []
+# v5.3: (ترد، کانکشن) — ترد‌های پول anyio بعد از ~۱۰ ثانیه بیکاری می‌میرند و ترد تازه کانکشن
+# تازه باز می‌کند؛ قبلاً کانکشن ترد‌های مرده هرگز بسته نمی‌شد (نشت حافظه + file descriptor).
+_all_conns: list[tuple[threading.Thread, sqlite3.Connection]] = []
 _all_lock = threading.Lock()
 _generation = 0  # v4.6.2: با هر close_all زیاد می‌شود تا کانکشن‌های thread-local باطل شوند (بعد از /restore)
 
@@ -171,9 +173,34 @@ def _open(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # v5.3: کش صفحه کوچک برای هر کانکشن thread-local (۲MB) و بدون mmap — با چند ترد
+    # همزمان، کش‌های بزرگ RSS را روی پلن ۵۱۲MB بی‌دلیل بالا می‌برد.
+    conn.execute("PRAGMA cache_size=-2000")
+    conn.execute("PRAGMA mmap_size=0")
+    me = threading.current_thread()
     with _all_lock:
-        _all_conns.append(conn)
+        _prune_dead_locked()
+        _all_conns.append((me, conn))
     return conn
+
+
+def _prune_dead_locked() -> None:
+    """کانکشن ترد‌های مرده را می‌بندد (باید با _all_lock صدا زده شود)."""
+    alive = []
+    for th, c in _all_conns:
+        if th.is_alive():
+            alive.append((th, c))
+        else:
+            with contextlib.suppress(Exception):
+                c.close()
+    _all_conns[:] = alive
+
+
+def prune_dead_connections() -> int:
+    """برای حلقهٔ نگهداری/memguard — تعداد کانکشن‌های باقی‌مانده را برمی‌گرداند."""
+    with _all_lock:
+        _prune_dead_locked()
+        return len(_all_conns)
 
 
 def conn() -> sqlite3.Connection:
@@ -428,6 +455,28 @@ SCHEMA = [
         paid_amount INTEGER DEFAULT 0
     )""",
     "CREATE INDEX IF NOT EXISTS ix_trapdec_deadline ON trap_decisions(status, deadline)",
+    # --- v5.3: توکن مات دکمه‌های پیام ناشناس (به‌جای شناسهٔ عددی فرستنده در callback_data) ---
+    """CREATE TABLE IF NOT EXISTS anon_refs (
+        token TEXT PRIMARY KEY,
+        owner_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        created_at TEXT
+    )""",
+    # --- v5.4: داشبورد — کاربران فعال هر روز (به وقت تهران) با زمان اولین فعالیت ---
+    # برای «فعال امروز/دیروز/میانگین ۷ روز» و «دیروز تا همین ساعت»؛ با ری‌استارت پاک نمی‌شود.
+    """CREATE TABLE IF NOT EXISTS daily_active (
+        day TEXT NOT NULL, user_id INTEGER NOT NULL, ts INTEGER NOT NULL,
+        PRIMARY KEY(day, user_id)
+    ) WITHOUT ROWID""",
+    # --- v5.4: شمارنده‌های ساعتی ماندگار (درخواست‌ها، خطاها، ری‌استارت‌ها) — bucket = 'YYYY-MM-DD HH' تهران ---
+    """CREATE TABLE IF NOT EXISTS stat_counters (
+        bucket TEXT NOT NULL, key TEXT NOT NULL, value INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(bucket, key)
+    ) WITHOUT ROWID""",
+    # --- v5.4: نمونه‌های دقیقه‌ای رم/CPU سرور (برای کمینه/میانگین/بیشینه و هزینه) ---
+    """CREATE TABLE IF NOT EXISTS server_samples (
+        ts INTEGER PRIMARY KEY, mem_mb REAL, cpu REAL
+    ) WITHOUT ROWID""",
 ]
 
 # ستون‌هایی که ممکن است در جدول users فعلی main.py نباشند (افزایشی و امن)
@@ -457,6 +506,8 @@ USER_COLUMNS = {
     "trial_given": "INTEGER DEFAULT 0",
     # v5.1: وضعیت «کاربر ربات را بلاک کرده» — پخش/اعلان‌ها دوباره سراغش نروند
     "blocked_bot": "INTEGER DEFAULT 0",
+    # v5.4: «حداقل یک درخواست» (ربات) — داشبورد در حالت API-only هم بخواندش
+    "requested": "INTEGER DEFAULT 0",
 }
 
 
@@ -488,7 +539,7 @@ def kv_set(key: str, value: str) -> None:
 def close_all() -> None:
     global _generation
     with _all_lock:
-        for c in _all_conns:
+        for _th, c in _all_conns:
             with contextlib.suppress(Exception):
                 c.close()
         _all_conns.clear()

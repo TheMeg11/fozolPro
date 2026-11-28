@@ -72,9 +72,12 @@ class Database:
         self.conn.execute("PRAGMA busy_timeout=30000")
         # ── v3.23: تیون عملکرد SQLite برای مقیاس ۵۰۰۰+ کاربر ──
         self.conn.execute("PRAGMA synchronous=NORMAL")   # در WAL ایمن است؛ نوشتن چند برابر سریع‌تر از FULL
-        self.conn.execute("PRAGMA cache_size=-16000")    # کش ۱۶ مگابایتی صفحات (پیش‌فرض ~۲MB)
-        self.conn.execute("PRAGMA temp_store=MEMORY")    # جدول‌های موقت در RAM نه دیسک
-        self.conn.execute("PRAGMA mmap_size=134217728")  # mmap ۱۲۸MB — خواندن سریع‌تر
+        # v5.3: کش ۸MB (قبلاً ۱۶MB) و mmap ۳۲MB (قبلاً ۱۲۸MB) — صفحات mmap در RSS کانتینر
+        # حساب می‌شوند و روی پلن ۵۱۲MB به سقف memguard نزدیک می‌کردند. temp_store=FILE تا
+        # ORDER BY/GROUP BY های بزرگ (لیدربورد) حافظه را منفجر نکنند.
+        self.conn.execute("PRAGMA cache_size=-8000")
+        self.conn.execute("PRAGMA temp_store=FILE")
+        self.conn.execute("PRAGMA mmap_size=33554432")
         # ── v3.23: کش TTL آمارهای سنگین پنل ادمین ──
         self._stats_cache = {}
         self._migrate()
@@ -871,14 +874,7 @@ class Database:
                 "AND c.clicked_at >= datetime('now', '-7 days') "
                 "GROUP BY c.owner_id ORDER BY cnt DESC LIMIT ?", (limit,)).fetchall()]
 
-    def get_user_rank_by_distinct(self, user_id):
-        with self._lock:
-            user_cnt = self.get_distinct_snoop_count(user_id)
-            row = self.conn.execute(
-                "SELECT COUNT(*) as higher FROM ("
-                "SELECT owner_id, COUNT(DISTINCT clicker_id) as cnt FROM clicks GROUP BY owner_id"
-                ") WHERE cnt > ?", (user_cnt,)).fetchone()
-            return row['higher'] + 1
+    # v5.3: نسخهٔ تکراری get_user_rank_by_distinct حذف شد (نسخهٔ پایین‌تر کلاس همیشه برنده بود).
 
     def get_vip_stats(self):
         with self._lock:
@@ -1238,118 +1234,6 @@ class Database:
             self.conn.execute("DELETE FROM channel_joins WHERE julianday('now') - julianday(joined_at) > ?", (days,))
             self.conn.commit()
 
-    def get_daily_stats(self):
-        with self._lock:
-            today = datetime.date.today().isoformat()
-            yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-
-            # --- کاربران ---
-            total_users = self.conn.execute("SELECT COUNT(*) as cnt FROM users").fetchone()['cnt']
-            new_today = self.conn.execute("SELECT COUNT(*) as cnt FROM users WHERE date(created_at)=?", (today,)).fetchone()['cnt']
-            new_yesterday = self.conn.execute("SELECT COUNT(*) as cnt FROM users WHERE date(created_at)=?", (yesterday,)).fetchone()['cnt']
-            active_today = self.conn.execute("SELECT COUNT(DISTINCT clicker_id) as cnt FROM clicks WHERE date(clicked_at)=?", (today,)).fetchone()['cnt']
-
-            # نرخ بازگشت: کاربران فعال امروز که حداقل یک بار قبل از امروز هم کلیک کرده‌اند
-            returning_today = self.conn.execute(
-                "SELECT COUNT(DISTINCT clicker_id) as cnt FROM clicks WHERE date(clicked_at)=? AND clicker_id IN (SELECT DISTINCT clicker_id FROM clicks WHERE date(clicked_at) < ?)",
-                (today, today)
-            ).fetchone()['cnt']
-            return_rate = f"{int((returning_today / active_today * 100) if active_today else 0)}%"
-
-            # --- منابع ورود (جدید) ---
-            organic = self.conn.execute("SELECT COUNT(*) as cnt FROM users WHERE source='organic'").fetchone()['cnt']
-            welcome = self.conn.execute("SELECT COUNT(*) as cnt FROM users WHERE source='welcome'").fetchone()['cnt']
-            referral = self.conn.execute("SELECT COUNT(*) as cnt FROM users WHERE source='referral'").fetchone()['cnt']
-
-            # --- کلیک‌ها ---
-            total_clicks = self.conn.execute("SELECT COUNT(*) as cnt FROM clicks").fetchone()['cnt']
-            distinct_clickers = self.conn.execute("SELECT COUNT(DISTINCT clicker_id) as cnt FROM clicks").fetchone()['cnt']
-            trap_owners = self.conn.execute("SELECT COUNT(DISTINCT owner_id) as cnt FROM clicks").fetchone()['cnt']
-            # میانگین کلیک ۷ روز
-            avg_7 = self.conn.execute(
-                "SELECT ROUND(COUNT(*) / 7.0, 1) as cnt FROM clicks WHERE clicked_at >= date('now','-7 days')"
-            ).fetchone()['cnt']
-
-            # --- VIP و درآمد ---
-            active_vip = self.conn.execute("SELECT COUNT(*) as cnt FROM vip WHERE expire_date >= date('now')").fetchone()['cnt']
-            total_revenue = self.conn.execute("SELECT COALESCE(SUM(amount),0) as cnt FROM transactions WHERE type IN ('vip','gift_vip')").fetchone()['cnt']
-            revenue_today = self.conn.execute("SELECT COALESCE(SUM(amount),0) as cnt FROM transactions WHERE date(timestamp)=? AND type IN ('vip','gift_vip')", (today,)).fetchone()['cnt']
-            tx_today = self.conn.execute("SELECT COUNT(*) as cnt FROM transactions WHERE date(timestamp)=? AND type IN ('vip','gift_vip')", (today,)).fetchone()['cnt']
-            tx_total = self.conn.execute("SELECT COUNT(*) as cnt FROM transactions WHERE type IN ('vip','gift_vip')").fetchone()['cnt']
-
-            # --- کدهای هدیه ---
-            gift_created = self.conn.execute("SELECT COUNT(*) as cnt FROM gift_codes").fetchone()['cnt']
-            gift_used = self.conn.execute("SELECT COALESCE(SUM(used_count),0) as cnt FROM gift_codes").fetchone()['cnt']
-
-            # --- پیام‌های ناشناس ---
-            anon_total = self.conn.execute("SELECT COUNT(*) as cnt FROM anon_logs").fetchone()['cnt']
-
-            # --- بلاک‌شده‌ها ---
-            total_banned = self.conn.execute("SELECT COUNT(*) as cnt FROM users WHERE blocked=1").fetchone()['cnt']
-            blocked_bot_count = self.conn.execute("SELECT COUNT(*) as cnt FROM users WHERE blocked_bot=1").fetchone()['cnt']
-
-            # --- v3.5: کلیک امروز ---
-            clicks_today = self.conn.execute("SELECT COUNT(*) as cnt FROM clicks WHERE date(clicked_at)=?", (today,)).fetchone()['cnt']
-
-            # --- v3.5: باز کردن پروفایل (reveal) ---
-            reveals_total = 0
-            reveal_revenue = 0
-            try:
-                reveals_total = self.conn.execute("SELECT COUNT(*) as cnt FROM reveals").fetchone()['cnt']
-                reveal_revenue = self.conn.execute(
-                    "SELECT COALESCE(SUM(amount),0) as cnt FROM transactions WHERE type='reveal'").fetchone()['cnt']
-            except sqlite3.OperationalError:
-                pass
-
-            # --- v3.5: استریک فعال امروز (استریک ≥۲ که امروز زنده نگه داشته شده) ---
-            streak_active = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM users WHERE streak_count >= 2 AND last_streak_date=?", (today,)
-            ).fetchone()['cnt']
-
-            # --- v3.5: کاربران جدیدِ امروز که همین امروز فعال شدند (حداقل یک کلیک) ---
-            new_activated_today = self.conn.execute(
-                "SELECT COUNT(*) as cnt FROM users u WHERE date(u.created_at)=? "
-                "AND EXISTS (SELECT 1 FROM clicks c WHERE c.clicker_id=u.user_id AND date(c.clicked_at)=?)",
-                (today, today)
-            ).fetchone()['cnt']
-
-            # --- کانال‌های اجباری (تعداد و مجموع عضویت) ---
-            channels = self.get_all_forced_channels()
-            channels_count = len(channels)
-            total_joins = sum(self.get_channel_join_count(ch['channel_id']) for ch in channels)
-
-            return {
-                'total_users': total_users,
-                'new_today': new_today,
-                'new_yesterday': new_yesterday,
-                'active_today': active_today,
-                'return_rate': return_rate,
-                'organic': organic,
-                'welcome': welcome,
-                'referral': referral,
-                'total_clicks': total_clicks,
-                'distinct_clickers': distinct_clickers,
-                'trap_owners': trap_owners,
-                'avg_7': avg_7,
-                'active_vip': active_vip,
-                'total_revenue': total_revenue,
-                'revenue_today': revenue_today,
-                'tx_today': tx_today,
-                'tx_total': tx_total,
-                'gift_created': gift_created,
-                'gift_used': gift_used,
-                'anon_total': anon_total,
-                'total_banned': total_banned,
-                'blocked_bot_count': blocked_bot_count,
-                'channels_count': channels_count,
-                'total_joins': total_joins,
-                'clicks_today': clicks_today,
-                'reveals_total': reveals_total,
-                'reveal_revenue': reveal_revenue,
-                'streak_active': streak_active,
-                'new_activated_today': new_activated_today,
-            }
-
     # ---------- v3.23: کش TTL آمارهای سنگین پنل ادمین ----------
     def _cached_stat(self, key, ttl, fn):
         """کش کوتاه‌مدت (پیش‌فرض ۶۰ ثانیه) برای کوئری‌های سنگین — در مقیاس ۵۰۰۰+ کاربر
@@ -1376,9 +1260,6 @@ class Database:
             self._stats_cache.clear()
         except Exception:
             pass
-
-    def get_daily_stats_cached(self, ttl=60.0):
-        return self._cached_stat("daily_stats", ttl, self.get_daily_stats)
 
     def get_user_stats_summary_cached(self, ttl=60.0):
         return self._cached_stat("user_stats_summary", ttl, self.get_user_stats_summary)
@@ -1965,17 +1846,23 @@ class Database:
         """رتبهٔ کاربر بین صاحبان تله بر اساس فضول.
         v3.9.4: فقط نام‌های قابل نمایش — مخفی‌کننده‌ها و بلاک‌شده‌ها شمرده نمی‌شوند
         تا «رتبهٔ تو» دقیقاً با تابلوی واقعی بخواند."""
+        # v5.3: به‌جای واکشی همهٔ صاحبان تله به پایتون (حافظه/CPU به ازای هر درخواست)،
+        # فقط تعداد «بالاتر از من» در خود SQLite شمرده می‌شود.
         with self._lock:
-            rows = self.conn.execute(
-                "SELECT c.owner_id, COUNT(DISTINCT c.clicker_id) as s "
+            me = self.conn.execute(
+                "SELECT COUNT(DISTINCT c.clicker_id) AS s FROM clicks c JOIN users u ON c.owner_id=u.user_id "
+                "WHERE c.owner_id=? AND u.hide_leaderboard=0 AND (u.blocked=0 OR u.blocked IS NULL)",
+                (user_id,)).fetchone()
+            my_s = me['s'] if me else 0
+            if not my_s:
+                return None
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS higher FROM ("
+                "SELECT c.owner_id, COUNT(DISTINCT c.clicker_id) AS s "
                 "FROM clicks c JOIN users u ON c.owner_id=u.user_id "
                 "WHERE u.hide_leaderboard=0 AND (u.blocked=0 OR u.blocked IS NULL) "
-                "GROUP BY c.owner_id ORDER BY s DESC"
-            ).fetchall()
-            for i, r in enumerate(rows, 1):
-                if r['owner_id'] == user_id:
-                    return i
-            return None
+                "GROUP BY c.owner_id) WHERE s > ?", (my_s,)).fetchone()
+            return (row['higher'] if row else 0) + 1
 
     def get_users_active_since(self, days=14):
         """کاربران بلاک‌نشده که در N روز اخیر فعالیتی داشته‌اند (برای گزارش هفتگی)."""
@@ -2113,22 +2000,6 @@ class Database:
                 return dict(row)
             return None
 
-    def get_last_daily_report_date(self):
-        with self._lock:
-            try:
-                row = self.conn.execute("SELECT last_report_date FROM daily_report_state WHERE id=1").fetchone()
-                return row['last_report_date'] if row else None
-            except sqlite3.OperationalError:
-                return None
-
-    def set_last_daily_report_date(self, date_str):
-        with self._lock:
-            try:
-                self.conn.execute("UPDATE daily_report_state SET last_report_date=? WHERE id=1", (date_str,))
-                self.conn.commit()
-            except sqlite3.OperationalError:
-                pass
-
     def get_daily_user_growth(self, days=30):
         """گرفتن تعداد کاربران جدید در هر روز برای N روز گذشته.
         برمی‌گرداند: لیست از (date_iso, count) — فقط روزهایی که حداقل ۱ کاربر جدید داشته‌اند.
@@ -2141,104 +2012,3 @@ class Database:
                 (f'-{days} days',)
             ).fetchall()
             return [(r['d'], r['c']) for r in rows]
-
-    def get_full_daily_report_data(self):
-        """داده‌های کامل برای گزارش روزانه ساعت ۲۳."""
-        with self._lock:
-            today = datetime.date.today().isoformat()
-            yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-
-            # کاربران
-            new_today = self.conn.execute("SELECT COUNT(*) as c FROM users WHERE date(created_at)=?", (today,)).fetchone()['c']
-            new_yesterday = self.conn.execute("SELECT COUNT(*) as c FROM users WHERE date(created_at)=?", (yesterday,)).fetchone()['c']
-            active_today = self.conn.execute("SELECT COUNT(DISTINCT clicker_id) as c FROM clicks WHERE date(clicked_at)=?", (today,)).fetchone()['c']
-            active_yesterday = self.conn.execute("SELECT COUNT(DISTINCT clicker_id) as c FROM clicks WHERE date(clicked_at)=?", (yesterday,)).fetchone()['c']
-
-            # کلیک‌ها
-            clicks_today = self.conn.execute("SELECT COUNT(*) as c FROM clicks WHERE date(clicked_at)=?", (today,)).fetchone()['c']
-            clicks_yesterday = self.conn.execute("SELECT COUNT(*) as c FROM clicks WHERE date(clicked_at)=?", (yesterday,)).fetchone()['c']
-            distinct_today = self.conn.execute("SELECT COUNT(DISTINCT clicker_id) as c FROM clicks WHERE date(clicked_at)=?", (today,)).fetchone()['c']
-
-            # صاحبان تلهٔ جدید امروز (اولین کلیک دریافتی)
-            new_trap_owners = self.conn.execute(
-                "SELECT COUNT(*) as c FROM (SELECT owner_id, MIN(date(clicked_at)) as first_click FROM clicks GROUP BY owner_id HAVING first_click=?)",
-                (today,)).fetchone()['c']
-
-            # پیام‌های ناشناس امروز
-            anon_today = self.conn.execute("SELECT COUNT(*) as c FROM anon_logs WHERE date(timestamp)=?", (today,)).fetchone()['c']
-
-            # گزارش‌های تخلف امروز (تقریبی: اخطارهای امروز)
-            reports_today = 0  # پیاده‌سازی ساده؛ اخطارها در جدول users به‌صورت count هست
-
-            # درآمد امروز و دیروز
-            revenue_today = self.conn.execute(
-                "SELECT COALESCE(SUM(amount),0) as c FROM transactions WHERE date(timestamp)=? AND type IN ('vip','gift_vip')",
-                (today,)).fetchone()['c']
-            revenue_yesterday = self.conn.execute(
-                "SELECT COALESCE(SUM(amount),0) as c FROM transactions WHERE date(timestamp)=? AND type IN ('vip','gift_vip')",
-                (yesterday,)).fetchone()['c']
-            tx_today = self.conn.execute(
-                "SELECT COUNT(*) as c FROM transactions WHERE date(timestamp)=? AND type IN ('vip','gift_vip')",
-                (today,)).fetchone()['c']
-
-            # VIP
-            active_vip = self.conn.execute("SELECT COUNT(*) as c FROM vip WHERE expire_date >= date('now')").fetchone()['c']
-            expiring_vips = self.conn.execute(
-                "SELECT user_id FROM vip WHERE expire_date IN (?, ?)",
-                (today, yesterday)).fetchall()
-            # VIPهای جدید امروز (کسانی که امروز تراکنش vip داشته‌اند)
-            new_vip_today_rows = self.conn.execute(
-                "SELECT DISTINCT user_id FROM transactions WHERE date(timestamp)=? AND type='vip'", (today,)).fetchall()
-            new_vip_today = [r['user_id'] for r in new_vip_today_rows]
-
-            # کدهای هدیه استفاده‌شده امروز
-            gift_used_today = self.conn.execute(
-                "SELECT COUNT(*) as c FROM gift_usage WHERE date(used_at)=?", (today,)).fetchone()['c']
-            active_gift_codes = self.conn.execute(
-                "SELECT COUNT(*) as c FROM gift_codes WHERE used_count < max_uses").fetchone()['c']
-
-            # کاربران مسدودشده امروز
-            # (ستون updated_at نداریم؛ تقریبی: کل مسدودشده‌ها)
-            total_banned = self.conn.execute("SELECT COUNT(*) as c FROM users WHERE blocked=1").fetchone()['c']
-            # کاربرانی که ربات را بلاک کرده‌اند (از خطای 403)
-            blocked_bot_count = self.conn.execute("SELECT COUNT(*) as c FROM users WHERE blocked_bot=1").fetchone()['c']
-
-            # برترین شکارچیان امروز
-            top_today = self.conn.execute(
-                "SELECT c.owner_id, u.first_name, COUNT(DISTINCT c.clicker_id) as c FROM clicks c "
-                "JOIN users u ON c.owner_id=u.user_id WHERE date(c.clicked_at)=? "
-                "GROUP BY c.owner_id ORDER BY c DESC LIMIT 5", (today,)).fetchall()
-
-            # کانال‌های اجباری مشکل‌دار
-            broken = list(broken_channels) if 'broken_channels' in globals() else []
-
-            # آخرین پخش همگانی
-            last_broadcast_info = self.conn.execute(
-                "SELECT value FROM settings WHERE key='last_broadcast_stats'").fetchone()
-            last_broadcast = last_broadcast_info['value'] if last_broadcast_info else None
-
-            return {
-                'new_today': new_today,
-                'new_yesterday': new_yesterday,
-                'active_today': active_today,
-                'active_yesterday': active_yesterday,
-                'clicks_today': clicks_today,
-                'clicks_yesterday': clicks_yesterday,
-                'distinct_today': distinct_today,
-                'new_trap_owners': new_trap_owners,
-                'anon_today': anon_today,
-                'revenue_today': revenue_today,
-                'revenue_yesterday': revenue_yesterday,
-                'tx_today': tx_today,
-                'active_vip': active_vip,
-                'expiring_vips': [r['user_id'] for r in expiring_vips],
-                'new_vip_today': new_vip_today,
-                'gift_used_today': gift_used_today,
-                'active_gift_codes': active_gift_codes,
-                'total_banned': total_banned,
-                'blocked_bot_count': blocked_bot_count,
-                'top_today': [dict(r) for r in top_today],
-                'broken_channels': broken,
-                'last_broadcast': last_broadcast,
-            }
-

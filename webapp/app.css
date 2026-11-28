@@ -513,6 +513,13 @@ body.is-vip .emoji-cell.on { border-color: var(--gold-2); background: linear-gra
 .bubble.me { align-self: flex-start; background: var(--accent); color: var(--accent-text); border-bottom-left-radius: 6px; }
 .bubble.them { align-self: flex-end; background: var(--surface); border: 1px solid var(--border); border-bottom-right-radius: 6px; }
 .bubble.pending { opacity: .65; }
+/* v5.3 (D5): وضعیت ارسال پیام */
+.bubble.failed { opacity: 1; outline: 1.5px dashed rgba(229, 72, 77, .75); outline-offset: 2px; }
+.bubble .send-state { font-size: 11px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; justify-content: flex-end; }
+.bubble .send-state .text-danger { color: #ffd7d9; font-weight: 700; }
+.bubble.them .send-state .text-danger { color: #e5484d; }
+.btn-link { background: none; border: 0; padding: 2px 4px; margin: 0; color: inherit; font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; min-height: 28px; }
+.btn-link:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 4px; }
 .bubble .media { display: flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 6px 8px; border-radius: 10px; background: rgba(0,0,0,.08); margin-bottom: 4px; }
 .bubble .media .ic { width: 16px; height: 16px; }
 .day-sep { align-self: center; font-size: 11.5px; color: var(--hint); background: var(--surface-3); padding: 2px 10px; border-radius: 10px; margin: 8px 0; }
@@ -1176,3 +1183,27 @@ body.is-vip .hero .progress > i { background: linear-gradient(90deg, var(--gold-
 .fzxinfo-card .ic { color: var(--hint); }
 .fzxinfo-card .grow { min-width: 0; flex: 1; }
 .fzxinfo-card .bold { font-size: 14px; }
+
+/* ===== v5.3 (D2): کشیدن برای تازه‌سازی ===== */
+.ptr { position: absolute; top: 0; left: 50%; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: var(--surface); border: 1px solid var(--border); box-shadow: 0 6px 18px -8px rgba(0,0,0,.45); color: var(--accent);
+  transform: translate(-50%, -44px); opacity: 0; pointer-events: none; z-index: 5; transition: opacity .15s; }
+.ptr .ic { width: 18px; height: 18px; }
+.ptr.ready { color: var(--accent); border-color: var(--accent); }
+.ptr.spin .ic { animation: ptr-spin .8s linear infinite; }
+@keyframes ptr-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ptr.spin .ic { animation: none; } }
+/* v5.3 (D3): دکمهٔ مشغول */
+button[aria-busy="true"] { cursor: progress; }
+
+/* v5.4: داشبورد «روند و مقایسه» ادمین — جدول ۴ستونه (شاخص | امروز | دیروز | م۷) */
+.trend { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1.15fr) minmax(0, .8fr) minmax(0, .85fr); font-size: 12.5px; }
+.trend > div { padding: 9px 3px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.trend > .th { border-top: 0; padding-top: 2px; color: var(--hint); font-size: 11px; font-weight: 800; }
+.trend .lbl { font-weight: 600; color: var(--text); line-height: 1.35; }
+.trend .lbl .emo { flex: none; }
+.trend .now { flex-wrap: wrap; }
+.trend .now b { font-size: 14px; font-weight: 800; }
+.trend .dl { font-size: 10.5px; font-weight: 800; padding: 1px 5px; border-radius: 7px; background: var(--surface-3); color: var(--hint); white-space: nowrap; }
+.trend .dl.good { background: var(--accent-soft); color: var(--accent); }
+.trend .dl.bad { background: var(--danger-soft); color: var(--danger); }

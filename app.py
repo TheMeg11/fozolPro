@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import hmac
 import html
+import ipaddress
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -21,13 +23,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import settings
 from auth import InitDataError, validate_init_data
 from services import admin as admin_svc
 from services import anon as anon_svc
-from services import avatars, bale_api, bot_settings, channels, db, missions, rewards, snoop, support, users, vip, wheel
+from services import avatars, bale_api, bot_settings, channels, db, metrics, missions, rewards, snoop, support, users, vip, wheel
 from services import profile as profile_svc
 from services.common import AppError
 
@@ -50,6 +53,7 @@ class RateLimiter:
         self.per_minute = per_minute
         self.hits: dict[str, deque] = defaultdict(deque)
         self.lock = threading.Lock()
+        self._last_prune = time.monotonic()
 
     def check(self, key: str) -> None:
         if self.per_minute <= 0:
@@ -62,17 +66,44 @@ class RateLimiter:
             if len(q) >= self.per_minute:
                 raise AppError("RATE_LIMITED", "تعداد درخواست‌ها زیاد است؛ چند ثانیه صبر کنید.", 429)
             q.append(t)
-            if len(self.hits) > 20000:  # جلوگیری از رشد بی‌رویه
-                for k in [k for k, v in self.hits.items() if not v][:5000]:
+            # v5.3 (رفع باگ): هرس قبلی هیچ‌وقت کار نمی‌کرد — deque کلیدهای قدیمی فقط وقتی
+            # خالی می‌شد که همان کلید دوباره درخواست بدهد؛ پس دیکشنری بی‌نهایت رشد می‌کرد و
+            # بعد از ۲۰هزار کلید، هر درخواست کل دیکشنری را پیمایش می‌کرد. حالا هر ۶۰ ثانیه
+            # کلیدهایی که آخرین درخواستشان قدیمی‌تر از ۶۰ ثانیه است حذف می‌شوند.
+            if t - self._last_prune > 60:
+                self._last_prune = t
+                for k in [k for k, v in self.hits.items() if not v or t - v[-1] > 60]:
                     self.hits.pop(k, None)
 
 
 limiter = RateLimiter(settings.RATE_LIMIT_PER_MIN)
 
 
+def _is_private(host: str) -> bool:
+    try:
+        a = ipaddress.ip_address(host)
+        return a.is_private or a.is_loopback or a.is_link_local or a in ipaddress.ip_network("100.64.0.0/10")
+    except ValueError:
+        return False
+
+
+def client_ip(request: Request) -> str:
+    """v5.3: IP واقعی کلاینت برای rate-limit.
+
+    uvicorn با forwarded_allow_ips="*" «چپ‌ترین» مقدار X-Forwarded-For را برمی‌دارد که
+    خود کلاینت می‌تواند جعل کند (دور زدن محدودیت IP با یک هدر). پراکسی Railway IP واقعی
+    را به «انتهای» لیست اضافه می‌کند؛ پس از راست به چپ اولین IP عمومی را برمی‌داریم."""
+    raw = request.headers.get("x-forwarded-for") or ""
+    for part in reversed([p.strip() for p in raw.split(",") if p.strip()]):
+        host = part.rsplit(":", 1)[0] if part.count(":") == 1 else part.strip("[]")
+        if not _is_private(host):
+            return host
+    return request.client.host if request.client else "?"
+
+
 # ---------------- Dependencies ----------------
 def current_user(request: Request) -> dict:
-    ip = request.client.host if request.client else "?"
+    ip = client_ip(request)
     limiter.check(f"ip:{ip}")
     try:
         data = validate_init_data(request.headers.get(settings.INITDATA_HEADER), settings.BOT_TOKEN,
@@ -82,6 +113,8 @@ def current_user(request: Request) -> dict:
     u = data["user"]
     limiter.check(f"u:{u['id']}")
     row = users.ensure_user(u)
+    if not settings.is_admin(u["id"]):  # v5.4: «کاربر فعال» داشبورد شامل کاربران مینی‌اپ هم بشود
+        metrics.hit(u["id"], count_request=False)
     if row.get("is_banned"):
         raise AppError("BANNED", "حساب شما مسدود شده است. با پشتیبانی تماس بگیرید.", 403)
     return row
@@ -148,6 +181,117 @@ class RedeemIn(BaseModel):
     code: str = Field(min_length=2, max_length=24)
 
 
+# ---- v5.3: مدل‌های ورودی برای اندپوینت‌هایی که قبلاً body: dict خام می‌گرفتند ----
+class ProfileEditIn(BaseModel):
+    display_name: str | None = Field(default=None, max_length=64)
+    active_title: int | str | None = None
+    reset_name: bool = False
+    reset_title: bool = False
+
+
+class WelcomeIn(BaseModel):
+    text: str | None = Field(default=None, max_length=1000)
+
+
+class MaskIn(BaseModel):
+    clear: bool = False
+    emoji: str | None = Field(default=None, max_length=32)
+    text: str | None = Field(default=None, max_length=64)
+
+
+class VisibilityIn(BaseModel):
+    period: Literal["week", "all"] = "week"
+    hidden: bool = False
+
+
+class ChallengeIn(BaseModel):
+    action: Literal["start", "cancel"]
+    # None هم پذیرفته می‌شود (parseInt نامعتبر در JS → null) — مثل رفتار قبلی، پیش‌فرض اعمال می‌شود
+    hours: int | None = Field(default=24, ge=1, le=24 * 60)
+    reward_days: int | None = Field(default=3, ge=0, le=3650)
+    reward_type: str = Field(default="vip", max_length=16)
+    reward_amount: int | None = Field(default=0, ge=0, le=10 ** 9)
+    announce_text: str = Field(default="", max_length=3000)
+
+
+class ForcedChannelIn(BaseModel):
+    channel_id: str = Field(min_length=2, max_length=128)
+    title: str = Field(default="", max_length=128)
+    target: int | None = Field(default=0, ge=0, le=10 ** 8)
+
+
+class AdBroadcastIn(BaseModel):
+    url: str = Field(default="", max_length=512)
+    stage: Literal["preview", "send"] = "preview"
+
+
+# ---- v5.3: سقف حجم بدنهٔ درخواست (ASGI) — جلوی بدنه‌های چند مگابایتی/حمله حافظه را می‌گیرد ----
+MAX_BODY_API = 64 * 1024
+MAX_BODY_WEBHOOK = 2 * 1024 * 1024
+
+
+class BodyLimitMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") in ("GET", "HEAD", "OPTIONS"):
+            return await self.app(scope, receive, send)
+        limit = MAX_BODY_WEBHOOK if scope.get("path", "").startswith("/bale/webhook/") else MAX_BODY_API
+        for k, v in scope.get("headers") or []:
+            if k == b"content-length":
+                try:
+                    if int(v) > limit:
+                        return await _send_413(send)
+                except ValueError:
+                    return await _send_413(send)
+        seen = 0
+
+        async def limited_receive():
+            nonlocal seen
+            msg = await receive()
+            if msg.get("type") == "http.request":
+                seen += len(msg.get("body") or b"")
+                if seen > limit:
+                    raise AppError("PAYLOAD_TOO_LARGE", "حجم درخواست بیش از حد مجاز است.", 413)
+            return msg
+
+        return await self.app(scope, limited_receive, send)
+
+
+async def _send_413(send) -> None:
+    body = json.dumps({"ok": False, "error": {"code": "PAYLOAD_TOO_LARGE", "message": "حجم درخواست بیش از حد مجاز است.",
+                                              "details": {}}}, ensure_ascii=False).encode()
+    await send({"type": "http.response.start", "status": 413,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
+
+
+class SelectiveGZip:
+    """v5.3: فشرده‌سازی gzip برای JSON/JS/CSS/HTML — به‌جز مسیرهای از قبل فشرده (عکس/فونت)."""
+    _SKIP = ("/api/avatar/", "/img/", "/fonts/", "/bale/webhook/")
+
+    def __init__(self, app):
+        self.app = app
+        self.gz = GZipMiddleware(app, minimum_size=800, compresslevel=5)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not scope.get("path", "").startswith(self._SKIP):
+            return await self.gz(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
+_ACCESS_LOG_ALL = (os.environ.get("ACCESS_LOG") or "").strip().lower() in ("1", "true", "yes", "on")
+_SLOW_MS = 1500.0
+
+
+def _safe_path(path: str) -> str:
+    """v5.3: سکرت وبهوک هرگز در لاگ چاپ نشود."""
+    if path.startswith("/bale/webhook/"):
+        return "/bale/webhook/***"
+    return path
+
+
 class WarnIn(BaseModel):
     reason: str = Field(default="", max_length=200)
 
@@ -184,17 +328,32 @@ def create_app(bot: Any = None) -> FastAPI:
         response.headers["Content-Security-Policy"] = settings.CSP   # بدون X-Frame-Options (نسخهٔ وب بله با iframe باز می‌کند)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # v5.3: HSTS + بستن APIهای حساس مرورگر که مینی‌اپ لازم ندارد
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Permissions-Policy"] = ("camera=(), microphone=(), geolocation=(), payment=(), usb=(), "
+                                                  "accelerometer=(), gyroscope=(), magnetometer=(), interest-cohort=()")
         path = request.url.path
         if path.startswith("/api/avatar/"):
             response.headers["Cache-Control"] = "public, max-age=86400, stale-while-revalidate=604800"
-        elif path.startswith("/api/"):
+        elif path.startswith("/api/") or path.startswith("/bale/"):
             response.headers["Cache-Control"] = "no-store"
         elif path.startswith("/fonts/"):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif request.query_params.get("v") and response.status_code == 200 and path != "/":
+            # v5.3: فایل‌های نسخه‌دار (?v=mtime) هرگز تغییر نمی‌کنند — کش یک‌ساله؛ با هر دیپلوی
+            # نسخهٔ جدید در index.html (که no-cache است) لینک تازه می‌سازد.
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         elif path != "/health":
             response.headers.setdefault("Cache-Control", "no-cache")
+        # v5.3: لاگ هر درخواست حذف شد (هزاران خط/ساعت = CPU + سهمیهٔ لاگ Railway).
+        # فقط خطاها و درخواست‌های کند؛ ACCESS_LOG=1 لاگ کامل را برمی‌گرداند.
         if path != "/health" and not path.startswith("/api/avatar/"):
-            log.info("%s %s %s %.0fms", request.method, path, response.status_code, (time.perf_counter() - start) * 1000)
+            ms = (time.perf_counter() - start) * 1000
+            code = response.status_code
+            if _ACCESS_LOG_ALL or code >= 500 or ms >= _SLOW_MS:
+                log.info("%s %s %s %.0fms", request.method, _safe_path(path), code, ms)
+            elif code >= 400 and code not in (401, 404, 429):
+                log.info("%s %s %s %.0fms", request.method, _safe_path(path), code, ms)
         return response
 
     # ---------- سلامت ----------
@@ -259,18 +418,18 @@ def create_app(bot: Any = None) -> FastAPI:
         return ok(profile_svc.view(user["user_id"]))
 
     @app.post("/api/profile/edit")
-    def profile_edit(body: dict, user: dict = Depends(member_user)):
-        raw_title = body.get("active_title")
+    def profile_edit(body: ProfileEditIn, user: dict = Depends(member_user)):
+        raw_title = body.active_title
         try:
-            active_title = int(raw_title) if raw_title is not None else None
+            active_title = int(raw_title) if raw_title not in (None, "") else None
         except (TypeError, ValueError):
             raise AppError("VALIDATION_ERROR", "لقب انتخابی نامعتبر است.", 422) from None
         return ok(profile_svc.update(
             user["user_id"],
-            display_name_str=body.get("display_name") if "display_name" in body else None,
+            display_name_str=body.display_name if "display_name" in body.model_fields_set else None,
             active_title=active_title,
-            reset_name=bool(body.get("reset_name")),
-            reset_title=bool(body.get("reset_title")),
+            reset_name=body.reset_name,
+            reset_title=body.reset_title,
         ))
 
     @app.post("/api/snoop/traps")
@@ -306,23 +465,16 @@ def create_app(bot: Any = None) -> FastAPI:
         return ok(vip.settings_view(user["user_id"]))
 
     @app.post("/api/vip/settings/welcome")
-    def vip_settings_welcome(body: dict, user: dict = Depends(member_user)):
-        text = body.get("text")
-        if text is not None and not isinstance(text, str):
-            raise AppError("VALIDATION_ERROR", "متن خوش‌آمدگویی نامعتبر است.", 422)
-        return ok(vip.set_welcome_text(user["user_id"], text))
+    def vip_settings_welcome(body: WelcomeIn, user: dict = Depends(member_user)):
+        return ok(vip.set_welcome_text(user["user_id"], body.text))
 
     @app.post("/api/vip/settings/mask")
-    def vip_settings_mask(body: dict, user: dict = Depends(member_user)):
-        if body.get("clear"):
+    def vip_settings_mask(body: MaskIn, user: dict = Depends(member_user)):
+        if body.clear:
             return ok(vip.clear_mask(user["user_id"]))
-        emoji = body.get("emoji")
-        mask_text = body.get("text")
-        if not isinstance(emoji, str):
+        if not body.emoji:
             raise AppError("VALIDATION_ERROR", "ایموجی نقاب را انتخاب کن.", 422)
-        if mask_text is not None and not isinstance(mask_text, str):
-            raise AppError("VALIDATION_ERROR", "لقب نقاب نامعتبر است.", 422)
-        return ok(vip.set_mask(user["user_id"], emoji, mask_text or ""))
+        return ok(vip.set_mask(user["user_id"], body.emoji, body.text or ""))
 
     # ---------- XP / لیدربورد / گردونه ----------
     @app.get("/api/leaderboard")
@@ -330,13 +482,10 @@ def create_app(bot: Any = None) -> FastAPI:
         return ok(users.leaderboard(period, user["user_id"]))
 
     @app.post("/api/leaderboard/visibility")
-    def leaderboard_visibility(body: dict, user: dict = Depends(member_user)):
+    def leaderboard_visibility(body: VisibilityIn, user: dict = Depends(member_user)):
         """v4.4: کلید روشن/خاموش نمایش نام من در برترین‌ها — جداگانه برای هفتگی و کل."""
-        period = str(body.get("period") or "week")
-        if period not in ("week", "all"):
-            raise AppError("VALIDATION_ERROR", "بازهٔ نامعتبر است.", 422)
-        users.set_hidden(period, user["user_id"], bool(body.get("hidden")))
-        return ok({"period": period, "hidden": bool(body.get("hidden"))})
+        users.set_hidden(body.period, user["user_id"], body.hidden)
+        return ok({"period": body.period, "hidden": body.hidden})
 
     @app.get("/api/wheel")
     def wheel_state(user: dict = Depends(member_user)):
@@ -414,33 +563,29 @@ def create_app(bot: Any = None) -> FastAPI:
         return ok(admin_svc.challenge_view())
 
     @app.post("/api/admin/challenge")
-    def a_challenge_op(body: dict, _: dict = Depends(admin_user)):
-        action = str(body.get("action") or "")
-        if action == "start":
+    def a_challenge_op(body: ChallengeIn, _: dict = Depends(admin_user)):
+        if body.action == "start":
             # v4.6: نوع جایزه (vip | envelope)، مبلغ پاکت و متن اعلان شروع قابل ویرایش
             return ok(admin_svc.challenge_start(
-                int(body.get("hours") or 24), int(body.get("reward_days") or 3),
-                str(body.get("reward_type") or "vip"), int(body.get("reward_amount") or 0),
-                str(body.get("announce_text") or "")))
-        if action == "cancel":
-            return ok(admin_svc.challenge_cancel())
-        raise AppError("VALIDATION_ERROR", "action نامعتبر است.", 422)
+                body.hours or 24, body.reward_days or 3, body.reward_type or "vip",
+                body.reward_amount or 0, body.announce_text or ""))
+        return ok(admin_svc.challenge_cancel())
 
     @app.get("/api/admin/forced-channels")
     def a_channels(_: dict = Depends(admin_user)):
         return ok(admin_svc.forced_channels())
 
     @app.post("/api/admin/forced-channels")
-    def a_channel_add(body: dict, _: dict = Depends(admin_user)):
-        return ok(admin_svc.add_forced_channel(str(body.get("channel_id") or ""), str(body.get("title") or ""), int(body.get("target") or 0)))
+    def a_channel_add(body: ForcedChannelIn, _: dict = Depends(admin_user)):
+        return ok(admin_svc.add_forced_channel(body.channel_id, body.title, body.target or 0))
 
     @app.delete("/api/admin/forced-channels/{channel_id}")
     def a_channel_del(channel_id: str, _: dict = Depends(admin_user)):
         return ok(admin_svc.remove_forced_channel(channel_id))
 
     @app.post("/api/admin/ad-broadcast")
-    def a_ad_broadcast(body: dict, _: dict = Depends(admin_user)):
-        return ok(admin_svc.ad_broadcast(str(body.get("url") or ""), str(body.get("stage") or "preview")))
+    def a_ad_broadcast(body: AdBroadcastIn, _: dict = Depends(admin_user)):
+        return ok(admin_svc.ad_broadcast(body.url, body.stage))
 
     @app.get("/api/admin/settings")
     def a_settings_view(_: dict = Depends(admin_user)):
@@ -632,4 +777,7 @@ def create_app(bot: Any = None) -> FastAPI:
     if settings.WEBAPP_DIR.exists():
         app.mount("/", StaticFiles(directory=str(settings.WEBAPP_DIR), html=False), name="webapp")
 
+    # v5.3: gzip (کاهش ۶۰-۸۰٪ پهنای‌باند JS/CSS/JSON) + سقف حجم بدنه — بیرونی‌ترین لایه‌ها
+    app.add_middleware(SelectiveGZip)
+    app.add_middleware(BodyLimitMiddleware)
     return app

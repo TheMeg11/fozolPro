@@ -25,13 +25,34 @@ from services import bale_api
 
 log = logging.getLogger("avatars")
 _session = requests.Session()
-_lock = threading.Lock()
+# v5.3: قفل به ازای هر کاربر به‌جای یک قفل سراسری — قبلاً یک دانلود کند (تا ۴۵ ثانیه)
+# همهٔ آواتارهای دیگر را پشت سرش نگه می‌داشت و ترد‌های پول anyio را قفل می‌کرد.
+_locks_guard = threading.Lock()
+_locks: dict[int, threading.Lock] = {}
+_dl_slots = threading.BoundedSemaphore(3)  # حداکثر ۳ دانلود/Pillow همزمان (کنترل RAM)
 TTL_DAYS = 7
+NEG_RETRY_SEC = 3600  # خطای گذرای شبکه: کش منفی فقط ۱ ساعت (نه ۷ روز)
 SIZE_PX = 160
+_ERROR = object()
 
 
 def _secret() -> str:
-    return settings.BOT_TOKEN or "fozol-avatar-fallback"
+    # v5.3: بدون فال‌بک ثابت قابل حدس — اگر توکن خالی باشد، کلید تصادفیِ همین پروسه
+    return settings.BOT_TOKEN or _EPHEMERAL
+
+
+_EPHEMERAL = os.urandom(32).hex()
+
+
+def _key_lock(uid: int) -> threading.Lock:
+    with _locks_guard:
+        lk = _locks.get(uid)
+        if lk is None:
+            if len(_locks) > 2000:  # قفل‌های آزاد را دور بریز تا دیکشنری رشد نکند
+                for k in [k for k, v in _locks.items() if not v.locked()]:
+                    _locks.pop(k, None)
+            lk = _locks[uid] = threading.Lock()
+        return lk
 
 
 def _sig(uid: int, exp: int) -> str:
@@ -58,8 +79,8 @@ def _cache_path(uid: int) -> Path:
     return Path(settings.AVATAR_DIR) / f"{int(uid)}.jpg"
 
 
-def _download(uid: int) -> bytes | None:
-    """دانلود عکس پروفایل از بله؛ None = عکس ندارد یا خطا."""
+def _download(uid: int):
+    """دانلود عکس پروفایل از بله؛ None = عکس ندارد، _ERROR = خطای گذرا."""
     try:
         chat = bale_api.call("getChat", chat_id=int(uid), timeout=10) or {}
         photo = (chat.get("photo") or {})
@@ -73,11 +94,17 @@ def _download(uid: int) -> bytes | None:
         url = f"{settings.BALE_FILE_BASE}/bot{settings.BOT_TOKEN}/{fp}"
         resp = _session.get(url, timeout=20)
         if resp.status_code != 200 or not resp.content:
+            return _ERROR if resp.status_code >= 500 else None
+        if len(resp.content) > 5 * 1024 * 1024:  # v5.3: سقف حجم — عکس پروفایل کوچک است
             return None
         return _optimize(resp.content)
     except Exception as exc:
         log.debug("avatar download %s failed: %s", uid, exc.__class__.__name__)
-        return None
+        # «بلاک/چت پیدا نشد/درخواست ردشده» قطعی است؛ بقیه (timeout/شبکه/۴۲۹) گذرا
+        code = getattr(exc, "code", "")
+        if code in ("BOT_BLOCKED", "BALE_API_ERROR"):
+            return None
+        return _ERROR
 
 
 def _optimize(raw: bytes) -> bytes:
@@ -118,16 +145,24 @@ def get_avatar(uid: int) -> bytes | None:
     hit = _cached(p)
     if hit is not None:  # b"" = «بدون عکس» کش‌شده — دیگر getChat تکراری نیست
         return hit or None
-    with _lock:
+    with _key_lock(uid):
         hit = _cached(p)  # دوباره زیر قفل — شاید ترد دیگری همین حالا نوشته باشد
         if hit is not None:
             return hit or None
-        data = _download(uid)
+        with _dl_slots:
+            data = _download(uid)
+        transient = data is _ERROR
+        if transient:
+            data = None
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(".tmp")
             tmp.write_bytes(data or b"")  # b'' = نشانگر «بدون عکس» تا getChat تکراری نشود
             os.replace(tmp, p)
+            if transient:
+                # v5.3: کش منفیِ کوتاه — mtime را عقب می‌بریم تا بعد از NEG_RETRY_SEC منقضی شود
+                old_t = time.time() - (TTL_DAYS * 86400 - NEG_RETRY_SEC)
+                os.utime(p, (old_t, old_t))
         except OSError as exc:
             log.warning("avatar cache write failed: %s", exc)
         return data

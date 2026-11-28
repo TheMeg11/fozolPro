@@ -23,7 +23,7 @@ import time
 from collections import defaultdict, deque
 
 import settings
-from services import avatars, bale_api, db, legacy_bridge, users, vip
+from services import anon_refs, avatars, bale_api, db, legacy_bridge, users, vip
 from services.common import AppError, display_name, iso, mask_name, now, parse
 
 log = logging.getLogger("anon")
@@ -128,18 +128,42 @@ def _partner_view(me_id: int, partner_id: int, seq: int) -> dict:
     return {"known": False, "masked": True, "name": f"کاربر ناشناس {seq or 1}", "avatar": None, "token": _token(me_id, partner_id)}
 
 
+# v5.3: کش (me, token) → partner — توکن‌ها فقط از روابط واقعی (لیست گفتگو/فضول‌ها) ساخته
+# می‌شوند، پس هر توکنی که اینجا ثبت شده قبلاً اعتبارسنجی شده است.
+_tok_cache: dict[tuple[int, str], int] = {}
+_tok_lock = threading.Lock()
+_TOK_CACHE_MAX = 20000
+
+
 def _token(me_id: int, partner_id: int) -> str:
     """توکن غیرقابل‌گم‌شدن برای کلاینت (بدون افشای شناسهٔ عددی طرف)."""
-    return hashlib.sha256(f"anon:{settings.BOT_TOKEN or 'fozol-anon'}:{me_id}:{partner_id}".encode()).hexdigest()[:16]
+    tok = hashlib.sha256(f"anon:{settings.BOT_TOKEN or 'fozol-anon'}:{me_id}:{partner_id}".encode()).hexdigest()[:16]
+    with _tok_lock:
+        if len(_tok_cache) >= _TOK_CACHE_MAX:
+            _tok_cache.clear()
+        _tok_cache[(int(me_id), tok)] = int(partner_id)
+    return tok
 
 
 def _partner_by_token(me_id: int, token: str) -> int | None:
-    """برگرداندن شناسهٔ طرف گفتگو از توکن — فقط اگر واقعاً گفتگو/رابطه وجود داشته باشد."""
+    """برگرداندن شناسهٔ طرف گفتگو از توکن — فقط اگر واقعاً گفتگو/رابطه وجود داشته باشد.
+
+    v5.3: اول از کش (O(1))؛ در غیر این صورت پیمایش کامل روابط. قبلاً فقط ۲۰۰ طرف اول
+    (بدون ترتیب) بررسی می‌شد → کاربر پرمخاطب بعضی گفتگوهایش را نمی‌توانست باز کند؛ و در هر
+    درخواست برای همهٔ طرف‌ها sha256 محاسبه می‌شد."""
+    token = str(token or "")
+    with _tok_lock:
+        hit = _tok_cache.get((int(me_id), token))
+    if hit is not None:
+        return hit
     r = db.rows("""SELECT DISTINCT CASE WHEN sender_id=? THEN receiver_id ELSE sender_id END AS p
-                   FROM anon_logs WHERE sender_id=? OR receiver_id=? LIMIT 200""", (me_id, me_id, me_id))
-    for row in r + [{"p": x} for x in _snoop_ids(me_id)]:
-        p = row["p"]
-        if p and _token(me_id, p) == token:
+                   FROM anon_logs WHERE sender_id=? OR receiver_id=?""", (me_id, me_id, me_id))
+    seen: set[int] = set()
+    for p in [row["p"] for row in r] + _snoop_ids(me_id):
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        if _token(me_id, p) == token:
             return p
     return None
 
@@ -244,20 +268,16 @@ def send(me_id: int, token: str, text: str) -> dict:
             mask = f"{m.get('emoji') or ''} {m.get('mask_text') or ''}".strip()
 
     # تحویل به طرف مقابل با همان فرمت/دکمه‌های ربات تا تجربه یکپارچه باشد
-    def esc(s: str) -> str:
-        return s.replace("*", "\\*").replace("_", "\\_").replace("[", "\\[")
+    esc = bale_api.escape_md
     is_reply = _has_thread(partner, me_id)
     body = f"🎭 *{esc(mask)}* نجوا کرد:\n{esc(text)}" if mask else (
         ("📩 *پاسخ ناشناس:*\n" if is_reply else "📩 *پیام ناشناس:*\n") + esc(text))
-    reply_markup = {"inline_keyboard": [[
-        {"text": "🔄 پاسخ ناشناس", "callback_data": f"anon_reply_{me_id}"},
-    ], [
-        {"text": "🚫 بلاک", "callback_data": f"block_{me_id}"},
-        {"text": "⚠️ گزارش تخلف", "callback_data": f"report_{me_id}"},
-    ]]}
+    # v5.3: دکمه‌ها با توکن مات — قبلاً شناسهٔ عددی فرستنده در callback_data بود (کشف هویت)
+    reply_markup = anon_refs.buttons(partner, me_id)
     try:
         # level=high: پیام کاربرِ مینی‌اپ هرگز پشت لِین پخش همگانی نمی‌ماند
-        bale_api.send_message(partner, body, reply_markup=reply_markup)
+        # v5.3: parse_mode=Markdown — قبلاً گیرنده ستاره و بک‌اسلش خام می‌دید
+        bale_api.send_message(partner, body, reply_markup=reply_markup, parse_mode="Markdown")
     except AppError as exc:
         if exc.code == "BOT_BLOCKED":
             raise AppError("BOT_BLOCKED", "این کاربر ربات را بلاک کرده است؛ پیام تحویل داده نشد.", 409) from None

@@ -21,6 +21,13 @@ import uvicorn
 import settings
 
 
+def _mask_url(url: str) -> str:
+    """v5.3: سکرت وبهوک هرگز در لاگ چاپ نشود (هر کس به لاگ دسترسی داشت می‌توانست آپدیت جعلی بفرستد)."""
+    if settings.WEBHOOK_SECRET and settings.WEBHOOK_SECRET in (url or ""):
+        return url.replace(settings.WEBHOOK_SECRET, "***")
+    return url
+
+
 def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     logging.getLogger("uvicorn.access").disabled = True
@@ -106,11 +113,11 @@ def set_webhook_when_listening(url: str, timeout: float = 90.0) -> None:
         try:
             # فقط url — بله پارامترهای اضافی تلگرامی را در برخی نسخه‌ها رد می‌کند
             bale_api.call("setWebhook", url=url)
-            log.info("✅ webhook set → %s", url)
+            log.info("✅ webhook set → %s", _mask_url(url))
             try:
                 info = bale_api.call("getWebhookInfo") or {}
                 log.info("webhook info: url=%s pending=%s last_error=%s",
-                         info.get("url"), info.get("pending_update_count"), info.get("last_error_message"))
+                         _mask_url(info.get("url") or ""), info.get("pending_update_count"), info.get("last_error_message"))
             except Exception:
                 pass
             return
@@ -150,6 +157,11 @@ def main() -> None:
 
     memguard.start()
 
+    # v5.4: نمونه‌برداری رم/CPU + شمارنده‌های ماندگار داشبورد + (اختیاری) API رسمی Railway
+    from services import server_stats
+
+    server_stats.start()
+
     bot, legacy = load_bot()
     webhook_url = f"{settings.WEBHOOK_URL}/bale/webhook/{settings.WEBHOOK_SECRET}" if (
         settings.WEBHOOK_URL and settings.WEBHOOK_SECRET) else ""
@@ -171,8 +183,13 @@ def main() -> None:
 
     from app import create_app
 
+    # v5.3: access_log=False — لاگ دسترسی uvicorn مسیر کامل وبهوک (شامل سکرت) را چاپ می‌کرد و
+    # برای هر درخواست یک خط می‌نوشت؛ میدل‌ور app.py فقط خطا/کند را با مسیر ماسک‌شده ثبت می‌کند.
+    # IP واقعی برای rate-limit با app.client_ip (راست‌ترین IP عمومی XFF) محاسبه می‌شود.
     server = uvicorn.Server(uvicorn.Config(create_app(bot), host="0.0.0.0", port=settings.PORT, log_config=None,
-                                           proxy_headers=True, forwarded_allow_ips="*", timeout_graceful_shutdown=10))
+                                           access_log=False, proxy_headers=True,
+                                           forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS") or "*",
+                                           timeout_graceful_shutdown=10))
     log.info("listening on 0.0.0.0:%s (webapp: %s)", settings.PORT, settings.WEBAPP_URL or "not set")
     try:
         server.run()  # تا SIGTERM بلاک می‌شود
@@ -182,6 +199,12 @@ def main() -> None:
                 bot.stop_polling()
             except Exception:
                 pass
+        try:
+            from services import metrics
+
+            metrics.flush()  # v5.4: آمار دقیقهٔ آخر قبل از بستن دیتابیس
+        except Exception:
+            pass
         try:
             db.close_all()
         except Exception:
