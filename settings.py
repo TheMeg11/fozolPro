@@ -48,7 +48,7 @@ RAILWAY_PUBLIC_DOMAIN: str = _get("RAILWAY_PUBLIC_DOMAIN")
 WEBAPP_URL: str = (_get("WEBAPP_URL") or (f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else "")).rstrip("/")
 WEBHOOK_URL: str = _get("WEBHOOK_URL").rstrip("/")      # خالی = polling
 WEBHOOK_SECRET: str = _get("WEBHOOK_SECRET")
-INITDATA_MAX_AGE: int = _int("INITDATA_MAX_AGE", 86400)  # ثانیه
+INITDATA_MAX_AGE: int = _int("INITDATA_MAX_AGE", 43200)  # ثانیه — v5.3: ۲۴←۱۲ ساعت (پنجرهٔ سوءاستفاده از initData نشت‌کرده کوتاه‌تر)
 
 # --- آدرس‌های پایهٔ بله (هیچ فراخوانی به سرویس دیگری انجام نمی‌شود) ---
 BALE_API_BASE: str = _get("BALE_API_BASE", "https://tapi.bale.ai").rstrip("/")

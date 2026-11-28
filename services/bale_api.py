@@ -78,7 +78,9 @@ def _raw_call(method: str, timeout: float, files: dict | None, payload: dict) ->
                 from services import db as _db
 
                 chat = (payload or {}).get("chat_id")
-                if chat is not None:
+                # v5.3: فقط متدهای ارسال — قبلاً getChat آواتار («chat not found») هم کاربر را
+                # blocked_bot علامت می‌زد و او از پخش/اعلان‌ها حذف می‌شد.
+                if chat is not None and method.startswith(("send", "copy", "forward")):
                     _db.execute("UPDATE users SET blocked_bot=1 WHERE user_id=?", (int(chat),))
             except Exception:
                 pass
@@ -106,8 +108,17 @@ def bot_username() -> str:
 
 
 def send_message(chat_id: int, text: str, reply_markup: dict | None = None,
-                 level: str | None = None) -> Any:
-    return call("sendMessage", chat_id=chat_id, text=text[:4096], reply_markup=reply_markup, level=level)
+                 level: str | None = None, parse_mode: str | None = None) -> Any:
+    """v5.3: parse_mode اختیاری — قبلاً متن‌های دارای *بولد* بدون parse_mode ارسال می‌شدند
+    و کاربر ستاره/بک‌اسلش خام می‌دید (پیام ناشناس، اخطار، اعلان ماموریت و…)."""
+    return call("sendMessage", chat_id=chat_id, text=text[:4096], reply_markup=reply_markup, level=level,
+                parse_mode=parse_mode)
+
+
+def escape_md(text: str | None) -> str:
+    """Escape مارک‌داون legacy (هم‌سان bot_helpers.escape_md ربات)."""
+    s = str(text or "")
+    return s.replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`").replace("[", "\\[")
 
 
 def send_invoice(chat_id: int, title: str, description: str, payload: str, amount_rial: int, label: str) -> Any:

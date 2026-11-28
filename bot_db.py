@@ -72,9 +72,12 @@ class Database:
         self.conn.execute("PRAGMA busy_timeout=30000")
         # ── v3.23: تیون عملکرد SQLite برای مقیاس ۵۰۰۰+ کاربر ──
         self.conn.execute("PRAGMA synchronous=NORMAL")   # در WAL ایمن است؛ نوشتن چند برابر سریع‌تر از FULL
-        self.conn.execute("PRAGMA cache_size=-16000")    # کش ۱۶ مگابایتی صفحات (پیش‌فرض ~۲MB)
-        self.conn.execute("PRAGMA temp_store=MEMORY")    # جدول‌های موقت در RAM نه دیسک
-        self.conn.execute("PRAGMA mmap_size=134217728")  # mmap ۱۲۸MB — خواندن سریع‌تر
+        # v5.3: کش ۸MB (قبلاً ۱۶MB) و mmap ۳۲MB (قبلاً ۱۲۸MB) — صفحات mmap در RSS کانتینر
+        # حساب می‌شوند و روی پلن ۵۱۲MB به سقف memguard نزدیک می‌کردند. temp_store=FILE تا
+        # ORDER BY/GROUP BY های بزرگ (لیدربورد) حافظه را منفجر نکنند.
+        self.conn.execute("PRAGMA cache_size=-8000")
+        self.conn.execute("PRAGMA temp_store=FILE")
+        self.conn.execute("PRAGMA mmap_size=33554432")
         # ── v3.23: کش TTL آمارهای سنگین پنل ادمین ──
         self._stats_cache = {}
         self._migrate()
@@ -871,14 +874,7 @@ class Database:
                 "AND c.clicked_at >= datetime('now', '-7 days') "
                 "GROUP BY c.owner_id ORDER BY cnt DESC LIMIT ?", (limit,)).fetchall()]
 
-    def get_user_rank_by_distinct(self, user_id):
-        with self._lock:
-            user_cnt = self.get_distinct_snoop_count(user_id)
-            row = self.conn.execute(
-                "SELECT COUNT(*) as higher FROM ("
-                "SELECT owner_id, COUNT(DISTINCT clicker_id) as cnt FROM clicks GROUP BY owner_id"
-                ") WHERE cnt > ?", (user_cnt,)).fetchone()
-            return row['higher'] + 1
+    # v5.3: نسخهٔ تکراری get_user_rank_by_distinct حذف شد (نسخهٔ پایین‌تر کلاس همیشه برنده بود).
 
     def get_vip_stats(self):
         with self._lock:
@@ -1965,17 +1961,23 @@ class Database:
         """رتبهٔ کاربر بین صاحبان تله بر اساس فضول.
         v3.9.4: فقط نام‌های قابل نمایش — مخفی‌کننده‌ها و بلاک‌شده‌ها شمرده نمی‌شوند
         تا «رتبهٔ تو» دقیقاً با تابلوی واقعی بخواند."""
+        # v5.3: به‌جای واکشی همهٔ صاحبان تله به پایتون (حافظه/CPU به ازای هر درخواست)،
+        # فقط تعداد «بالاتر از من» در خود SQLite شمرده می‌شود.
         with self._lock:
-            rows = self.conn.execute(
-                "SELECT c.owner_id, COUNT(DISTINCT c.clicker_id) as s "
+            me = self.conn.execute(
+                "SELECT COUNT(DISTINCT c.clicker_id) AS s FROM clicks c JOIN users u ON c.owner_id=u.user_id "
+                "WHERE c.owner_id=? AND u.hide_leaderboard=0 AND (u.blocked=0 OR u.blocked IS NULL)",
+                (user_id,)).fetchone()
+            my_s = me['s'] if me else 0
+            if not my_s:
+                return None
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS higher FROM ("
+                "SELECT c.owner_id, COUNT(DISTINCT c.clicker_id) AS s "
                 "FROM clicks c JOIN users u ON c.owner_id=u.user_id "
                 "WHERE u.hide_leaderboard=0 AND (u.blocked=0 OR u.blocked IS NULL) "
-                "GROUP BY c.owner_id ORDER BY s DESC"
-            ).fetchall()
-            for i, r in enumerate(rows, 1):
-                if r['owner_id'] == user_id:
-                    return i
-            return None
+                "GROUP BY c.owner_id) WHERE s > ?", (my_s,)).fetchone()
+            return (row['higher'] if row else 0) + 1
 
     def get_users_active_since(self, days=14):
         """کاربران بلاک‌نشده که در N روز اخیر فعالیتی داشته‌اند (برای گزارش هفتگی)."""

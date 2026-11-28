@@ -21,7 +21,9 @@ import settings
 log = logging.getLogger("db")
 _local = threading.local()
 _write_lock = threading.RLock()
-_all_conns: list[sqlite3.Connection] = []
+# v5.3: (ترد، کانکشن) — ترد‌های پول anyio بعد از ~۱۰ ثانیه بیکاری می‌میرند و ترد تازه کانکشن
+# تازه باز می‌کند؛ قبلاً کانکشن ترد‌های مرده هرگز بسته نمی‌شد (نشت حافظه + file descriptor).
+_all_conns: list[tuple[threading.Thread, sqlite3.Connection]] = []
 _all_lock = threading.Lock()
 _generation = 0  # v4.6.2: با هر close_all زیاد می‌شود تا کانکشن‌های thread-local باطل شوند (بعد از /restore)
 
@@ -171,9 +173,34 @@ def _open(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # v5.3: کش صفحه کوچک برای هر کانکشن thread-local (۲MB) و بدون mmap — با چند ترد
+    # همزمان، کش‌های بزرگ RSS را روی پلن ۵۱۲MB بی‌دلیل بالا می‌برد.
+    conn.execute("PRAGMA cache_size=-2000")
+    conn.execute("PRAGMA mmap_size=0")
+    me = threading.current_thread()
     with _all_lock:
-        _all_conns.append(conn)
+        _prune_dead_locked()
+        _all_conns.append((me, conn))
     return conn
+
+
+def _prune_dead_locked() -> None:
+    """کانکشن ترد‌های مرده را می‌بندد (باید با _all_lock صدا زده شود)."""
+    alive = []
+    for th, c in _all_conns:
+        if th.is_alive():
+            alive.append((th, c))
+        else:
+            with contextlib.suppress(Exception):
+                c.close()
+    _all_conns[:] = alive
+
+
+def prune_dead_connections() -> int:
+    """برای حلقهٔ نگهداری/memguard — تعداد کانکشن‌های باقی‌مانده را برمی‌گرداند."""
+    with _all_lock:
+        _prune_dead_locked()
+        return len(_all_conns)
 
 
 def conn() -> sqlite3.Connection:
@@ -428,6 +455,13 @@ SCHEMA = [
         paid_amount INTEGER DEFAULT 0
     )""",
     "CREATE INDEX IF NOT EXISTS ix_trapdec_deadline ON trap_decisions(status, deadline)",
+    # --- v5.3: توکن مات دکمه‌های پیام ناشناس (به‌جای شناسهٔ عددی فرستنده در callback_data) ---
+    """CREATE TABLE IF NOT EXISTS anon_refs (
+        token TEXT PRIMARY KEY,
+        owner_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        created_at TEXT
+    )""",
 ]
 
 # ستون‌هایی که ممکن است در جدول users فعلی main.py نباشند (افزایشی و امن)
@@ -488,7 +522,7 @@ def kv_set(key: str, value: str) -> None:
 def close_all() -> None:
     global _generation
     with _all_lock:
-        for c in _all_conns:
+        for _th, c in _all_conns:
             with contextlib.suppress(Exception):
                 c.close()
         _all_conns.clear()

@@ -277,15 +277,15 @@ def _notify_completion(user_id: int, newly: list[dict]) -> None:
         if len(newly) == 1:
             t = newly[0]
             text = ("🎉 *ماموریت تکمیل شد!*\n\n"
-                    f"🎯 *{t['name']}*\n"
+                    f"🎯 *{bale_api.escape_md(t['name'])}*\n"
                     f"⭐ +{t['xp']} XP")
         else:
             lines = [f"🎉 *{len(newly)} ماموریت تکمیل شد!*\n"]
             for t in newly[:10]:
-                lines.append(f"• {t['name']} (+{t['xp']} XP)")
+                lines.append(f"• {bale_api.escape_md(t['name'])} (+{t['xp']} XP)")
             if len(newly) > 10:
                 lines.append(f"• و {len(newly) - 10} ماموریت دیگر...")
             text = "\n".join(lines)
-        bale_api.send_message(user_id, text)
+        bale_api.send_message(user_id, text, parse_mode="Markdown")  # v5.3: بولد درست نمایش داده شود
     except Exception as exc:
         log.debug("task completion notify skipped: %s", exc)

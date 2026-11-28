@@ -10,6 +10,7 @@ import threading
 import time
 from datetime import timedelta
 
+import bot_sender
 import settings
 from services import avatars, bale_api, bot_settings, db, legacy_bridge, snoop, support, users, vip
 from services.common import AppError, TEHRAN, display_name, iso, jalali, now, tehran_day_start
@@ -182,18 +183,18 @@ def warn_user(user_id: int, reason: str = "اخطار از طرف مدیر") -> 
             bale_api.send_message(user_id,
                                   "⛔ *اخطار ۳ از ۳ – حساب شما مسدود شد*\n\n"
                                   "به دلیل دریافت سه اخطار پیاپی، دسترسی شما به تمام قابلیت‌های ربات برای همیشه مسدود گردید.\n\n"
-                                  "🪦 *مدیریت فضول‌یاب*")
+                                  "🪦 *مدیریت فضول‌یاب*", parse_mode="Markdown")
         except AppError:
             pass
         return {**user_detail(user_id), "warn": {"count": current, "banned": True}}
     try:
         bale_api.send_message(user_id,
                               f"⚠️ *اخطار {current} از 3 از طرف مدیر ربات فضول‌یاب*\n\n"
-                              f"گزارشی مبنی بر *{reason}* از سمت شما دریافت شده است.\n"
+                              f"گزارشی مبنی بر *{bale_api.escape_md(reason)}* از سمت شما دریافت شده است.\n"
                               "طبق قوانین ربات، این نوع رفتار قابل قبول نیست.\n\n"
                               "❌ در صورت تکرار، دسترسی شما به تمام قابلیت‌های ربات *برای همیشه مسدود* خواهد شد.\n\n"
                               "👮 لطفاً قوانین رو رعایت کن.\n"
-                              "🕷️ *مدیریت فضول‌یاب*")
+                              "🕷️ *مدیریت فضول‌یاب*", parse_mode="Markdown")
     except AppError:
         pass
     return {**user_detail(user_id), "warn": {"count": current, "banned": False}}
@@ -210,12 +211,13 @@ def reset_warnings(user_id: int) -> dict:
 # ---------------- پخش همگانی ----------------
 def _targets(target: str) -> list[int]:
     ts = iso()
-    sql = {"all": "SELECT user_id FROM users WHERE COALESCE(is_banned,0)=0 AND COALESCE(blocked_by_admin,0)=0",
+    # v5.3: کاربرانی که ربات را بلاک کرده‌اند (blocked_bot=1) کنار گذاشته می‌شوند — ارسال بی‌فایده نیست
+    sql = {"all": "SELECT user_id FROM users WHERE COALESCE(is_banned,0)=0 AND COALESCE(blocked_by_admin,0)=0 AND COALESCE(blocked_bot,0)=0",
            "vip": ("SELECT u.user_id FROM users u LEFT JOIN vip v ON v.user_id=u.user_id "
-                   "WHERE COALESCE(u.is_banned,0)=0 AND COALESCE(u.blocked_by_admin,0)=0 AND "
+                   "WHERE COALESCE(u.is_banned,0)=0 AND COALESCE(u.blocked_by_admin,0)=0 AND COALESCE(u.blocked_bot,0)=0 AND "
                    "(u.vip_until>? OR v.expire_date>=?)"),
            "free": ("SELECT u.user_id FROM users u LEFT JOIN vip v ON v.user_id=u.user_id "
-                    "WHERE COALESCE(u.is_banned,0)=0 AND COALESCE(u.blocked_by_admin,0)=0 AND "
+                    "WHERE COALESCE(u.is_banned,0)=0 AND COALESCE(u.blocked_by_admin,0)=0 AND COALESCE(u.blocked_bot,0)=0 AND "
                     "(u.vip_until IS NULL OR u.vip_until<=?) AND (v.expire_date IS NULL OR v.expire_date<?)")}.get(target)
     if not sql:
         raise AppError("VALIDATION_ERROR", "گروه مخاطبان نامعتبر است.", 422)
@@ -250,7 +252,8 @@ def start_broadcast(text: str, target: str, sender=None) -> dict:
         ids = _targets(target)
         job_id = f"b-{int(time.time())}-{secrets.token_hex(2)}"
         db.execute("INSERT INTO broadcast_jobs(id, target, text, status, total, created_at) VALUES(?,?,?, 'running', ?, ?)", (job_id, target, text, len(ids), iso()))
-    send = sender or (lambda uid: bale_api.send_message(uid, text))
+    # v5.3: لِین BULK — قبلاً پخش مینی‌اپ با اولویت پیش‌فرض HIGH می‌رفت و جلوی پاسخ کاربران را می‌گرفت
+    send = sender or (lambda uid: bale_api.send_message(uid, text, level=bot_sender.BULK))
     threading.Thread(target=_run_broadcast, args=(job_id, ids, send), name=f"broadcast-{job_id}", daemon=True).start()
     return {"job_id": job_id, "total": len(ids)}
 
@@ -589,7 +592,8 @@ def _sync_bot_channels_reload() -> None:
 
 
 # ---------------- v4.3: حالت تبلیغ (پیام همگانی با دکمه‌های لینک تبلیغ) ----------------
-_AD_TEMPLATE = ("🔔 <b>یه فضول روی لینک شما کلیک کرد!</b>\n"
+# v5.3: قالب Markdown (هم‌سان ربات) + ارسال با parse_mode — قبلاً تگ‌های <b>/<i> خام دیده می‌شدند
+_AD_TEMPLATE = ("🔔 *یه فضول روی لینک شما کلیک کرد!*\n"
                 "🕒 {t}\n"
                 "👤 🕵️ فضول ناشناس\n"
                 "🆔 مخفی 🔒\n"
@@ -611,8 +615,8 @@ def ad_broadcast(url: str, stage: str) -> dict:
     if stage == "preview":
         if not settings.ADMIN_ID:
             raise AppError("ADMIN_NOT_CONFIGURED", "ADMIN_ID تنظیم نشده است.", 503)
-        bale_api.send_message(settings.ADMIN_ID, text + "\n\n<i>👁 نمونهٔ پیام تبلیغ — این متن با دکمه‌های بالا به همه ارسال می‌شود.</i>",
-                              reply_markup=markup)
+        bale_api.send_message(settings.ADMIN_ID, text + "\n\n_👁 نمونهٔ پیام تبلیغ — این متن با دکمه‌های بالا به همه ارسال می‌شود._",
+                              reply_markup=markup, parse_mode="Markdown")
         return {"preview": True, "targets": _ad_targets_count()}
     if stage == "send":
         with _bc_lock:
@@ -622,7 +626,8 @@ def ad_broadcast(url: str, stage: str) -> dict:
             job_id = f"ad-{int(time.time())}-{secrets.token_hex(2)}"
             db.execute("INSERT INTO broadcast_jobs(id, target, text, status, total, created_at) VALUES(?,?,?, 'running', ?, ?)",
                        (job_id, "ad", text, len(ids), iso()))
-        send = lambda uid: bale_api.send_message(uid, text, reply_markup=markup)  # noqa: E731
+        send = lambda uid: bale_api.send_message(uid, text, reply_markup=markup, parse_mode="Markdown",  # noqa: E731
+                                                 level=bot_sender.BULK)
         threading.Thread(target=_run_broadcast, args=(job_id, ids, send), name=f"adbc-{job_id}", daemon=True).start()
         return {"job_id": job_id, "total": len(ids)}
     raise AppError("VALIDATION_ERROR", "مرحلهٔ نامعتبر است.", 422)

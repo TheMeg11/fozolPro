@@ -12,7 +12,7 @@
   /* ===================== Config ===================== */
   var CFG = Object.assign({
     appName: 'فضول‌یاب',
-    version: '4.7.0',
+    version: '5.3.0',
     apiBase: '/api',
     sdkGlobal: 'Bale',            // window.Bale.WebApp
     sdkFallbackGlobal: '',        // فقط برای توسعه؛ در محصول خالی بماند
@@ -23,6 +23,26 @@
     demo: 'auto',                 // auto | on | off
     requestTimeoutMs: 15000
   }, window.APP_CONFIG || {});
+
+  /* v5.3: نسخهٔ دارایی‌ها (?v=…) از آدرس خود app.js — برای بارگذاری تنبل gold.js با همان کش‌شکن */
+  var ASSET_V = (function () {
+    try { var src = (document.currentScript && document.currentScript.src) || ''; var m = src.match(/[?&]v=([^&#]+)/); return m ? m[1] : ''; } catch (e) { return ''; }
+  })();
+  var _goldLoading = null, _lastVipMe = null;
+  /* v5.3: ذرات طلایی فقط برای VIP — اسکریپت (و کانواس تمام‌صفحه) برای بقیه هرگز بارگذاری نمی‌شود */
+  function applyVip(me) {
+    _lastVipMe = me;
+    if (window.FzVip) { try { window.FzVip.apply(me); } catch (e) { /* noop */ } return; }
+    if (!(me && me.vip && me.vip.active) || _goldLoading) return;
+    _goldLoading = new Promise(function (resolve) {
+      var sc = document.createElement('script');
+      sc.src = 'gold.js' + (ASSET_V ? '?v=' + ASSET_V : '');
+      sc.async = true;
+      sc.onload = function () { if (window.FzVip) { try { window.FzVip.apply(_lastVipMe); } catch (e) { /* noop */ } } resolve(); };
+      sc.onerror = function () { _goldLoading = null; resolve(); };
+      document.body.appendChild(sc);
+    });
+  }
 
   /* ===================== Utils ===================== */
   var nf; try { nf = new Intl.NumberFormat('fa-IR'); } catch (e) { nf = null; }
@@ -308,7 +328,10 @@
     var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, CFG.requestTimeoutMs);
     // fozol-pro: خطاهای گذرا (5xx / قطعی لحظه‌ای شبکه / timeout) تا ۲ بار با فاصله دوباره تلاش
     // می‌شوند تا کاربر به‌خاطر یک اختلال لحظه‌ای صفحهٔ خطا نبیند.
-    function retryable() { return attempt < 2; }
+    // v5.3: فقط برای متدهای idempotent (GET/DELETE). تکرار خودکار POST بعد از 5xx/timeout
+    // می‌توانست پخش همگانی، چرخش گردونه، فاکتور یا پیام را «دوبار» اجرا کند.
+    var idempotent = method === 'GET' || method === 'DELETE';
+    function retryable() { return idempotent && attempt < 2; }
     function retry() { return sleep(800 * (attempt + 1)).then(function () { return realFetch(method, path, body, attempt + 1); }); }
     return fetch(CFG.apiBase + path, {
       method: method,
@@ -329,8 +352,7 @@
     }, function (e) {
       clearTimeout(timer);
       var isAbort = e && e.name === 'AbortError';
-      var safeMethod = method === 'GET' || method === 'DELETE';
-      if (retryable() && (safeMethod || isAbort)) return retry();
+      if (retryable()) return retry();
       throw new ApiError(isAbort ? 'TIMEOUT' : 'NETWORK', isAbort ? ERR_TEXT.TIMEOUT : ERR_TEXT.NETWORK);
     });
   }
@@ -911,11 +933,15 @@
       this.root = root;
       this.pages = h('div', { class: 'pages' });
       this.nav = h('nav', { class: 'nav', role: 'tablist', 'aria-label': 'منوی اصلی' });
-      this.toasts = h('div', { class: 'toast-wrap', 'aria-live': 'polite' });
-      this.offline = h('div', { class: 'offline-bar' }, icon('wifiOff'), 'اتصال اینترنت قطع است؛ برخی بخش‌ها در دسترس نیستند');
+      this.toasts = h('div', { class: 'toast-wrap', 'aria-live': 'polite', role: 'status' });
+      this.offline = h('div', { class: 'offline-bar', role: 'alert' }, icon('wifiOff'), 'اتصال اینترنت قطع است؛ برخی بخش‌ها در دسترس نیستند');
       root.appendChild(this.pages); root.appendChild(this.nav); root.appendChild(this.toasts); root.appendChild(this.offline);
       var self = this;
-      window.addEventListener('online', function () { State.online = true; self.offline.classList.remove('show'); toast('اتصال برقرار شد', 'success'); });
+      window.addEventListener('online', function () {
+        State.online = true; self.offline.classList.remove('show'); toast('اتصال برقرار شد', 'success');
+        /* v5.3 (D1): صفحهٔ فعلی خودکار تازه شود — قبلاً خطای آفلاین روی صفحه می‌ماند تا کاربر دستی تلاش کند */
+        try { var cur = Router.current; if (cur && cur.ctx && cur.ctx.alive && cur.ctx.reload) cur.ctx.reload(); } catch (e) { /* noop */ }
+      });
       window.addEventListener('offline', function () { State.online = false; self.offline.classList.add('show'); });
       if (!navigator.onLine) this.offline.classList.add('show');
     },
@@ -1060,6 +1086,14 @@
       o.action ? h('button', { class: 'btn btn-secondary', onclick: o.action.onClick }, o.action.icon ? icon(o.action.icon) : null, o.action.text) : null);
   }
   function ErrorState(e, retry) {
+    /* v5.3 (D6): هر خطا یک اقدام مشخص دارد — نشست منقضی → بازگشت به ربات؛ نیاز به VIP → صفحهٔ VIP */
+    var code = e && e.code;
+    if (code === 'AUTH_EXPIRED' || code === 'AUTH_INVALID' || code === 'AUTH_REQUIRED') {
+      return Empty({ icon: 'lock', title: 'نشست منقضی شده', text: errMsg(e), action: { text: 'بازگشت به ربات', icon: 'external', onClick: function () { Platform.openBot(''); } } });
+    }
+    if (code === 'FORBIDDEN' && /VIP/.test((e && e.message) || '')) {
+      return Empty({ icon: 'crown', title: 'ویژهٔ اعضای VIP', text: errMsg(e), action: { text: 'مشاهدهٔ پلن‌های VIP', icon: 'crown', onClick: function () { Router.go('vip'); } } });
+    }
     return Empty({ icon: e && e.code === 'OFFLINE' ? 'wifiOff' : (e && e.code === 'FORBIDDEN' ? 'lock' : 'alert'), title: e && e.code === 'OFFLINE' ? 'آفلاین هستید' : (e && e.code === 'FORBIDDEN' ? 'دسترسی محدود' : 'مشکلی پیش آمد'), text: errMsg(e), action: retry && (!e || e.code !== 'FORBIDDEN') ? { text: 'تلاش دوباره', icon: 'refresh', onClick: retry } : null });
   }
   var Skel = {
@@ -1077,7 +1111,7 @@
   function Seg(options, value, onChange) {
     var el = h('div', { class: 'seg', role: 'tablist' });
     options.forEach(function (o) {
-      el.appendChild(h('button', { class: o.id === value ? 'on' : '', onclick: function () { if (o.id === value) return; Platform.haptic('select'); onChange(o.id); } }, o.label));
+      el.appendChild(h('button', { class: o.id === value ? 'on' : '', role: 'tab', 'aria-selected': o.id === value ? 'true' : 'false', onclick: function () { if (o.id === value) return; Platform.haptic('select'); onChange(o.id); } }, o.label));
     });
     return el;
   }
@@ -1098,9 +1132,22 @@
     return h('span', { class: 'chip ' + m[1] }, m[0]);
   }
   function withLoading(btn, promise) {
-    btn.classList.add('loading'); btn.disabled = true;
-    return promise.then(function (r) { btn.classList.remove('loading'); btn.disabled = false; return r; }, function (e) { btn.classList.remove('loading'); btn.disabled = false; throw e; });
+    if (!btn) return promise;
+    btn.classList.add('loading'); btn.disabled = true; btn.setAttribute('aria-busy', 'true');
+    function done() { btn.classList.remove('loading'); btn.disabled = false; btn.removeAttribute('aria-busy'); }
+    return promise.then(function (r) { done(); return r; }, function (e) { done(); throw e; });
   }
+  /* v5.3 (D3): نگهبان سراسری دابل‌تپ — کلیک روی دکمهٔ در حال بارگذاری یا دو تپ پشت سر هم
+     (<۴۰۰ms) روی همان دکمه نادیده گرفته می‌شود؛ جلوی خرید/ارسال/ادعای جایزهٔ تکراری را می‌گیرد.
+     دکمه‌هایی که تپ سریع لازم دارند می‌توانند data-rapid بگیرند. */
+  document.addEventListener('click', function (e) {
+    var t = e.target; var b = t && t.closest ? t.closest('button, [role="button"]') : null;
+    if (!b || b.hasAttribute('data-rapid')) return;
+    if (b.classList.contains('loading') || b.getAttribute('aria-busy') === 'true') { e.preventDefault(); e.stopPropagation(); return; }
+    var now = Date.now();
+    if (b.__fzTap && now - b.__fzTap < 400) { e.preventDefault(); e.stopPropagation(); return; }
+    b.__fzTap = now;
+  }, true);
   function bytes(n) { return n > 1048576 ? fa((n / 1048576).toFixed(1)) + ' مگابایت' : fa(Math.round(n / 1024)) + ' کیلوبایت'; }
 
   /* ===================== Router (in-memory, بدون تغییر history) ===================== */
@@ -1142,6 +1189,7 @@
         }
       };
       body.addEventListener('scroll', function () { headerEl.classList.toggle('scrolled', body.scrollTop > 4); }, { passive: true });
+      if (!route.flush && !route.noPull) attachPullToRefresh(body, ctx);
       this.current = { page: page, ctx: ctx, name: entry.name };
       try { route.render(ctx); } catch (e) { console.error(e); body.replaceChildren(ErrorState(new ApiError('SERVER_ERROR', 'خطا در نمایش صفحه'), function () { Router.refresh(); })); }
       // حذف صفحات قدیمی باقی‌مانده
@@ -1155,6 +1203,38 @@
       Back.sync();
     }
   };
+
+  /* v5.3 (D2): کشیدن به پایین برای تازه‌سازی — فقط وقتی صفحه در بالاترین نقطه است.
+     آستانهٔ ۷۰px با مقاومت؛ از ctx.reload صفحه استفاده می‌کند (همان دکمهٔ «به‌روزرسانی»). */
+  function attachPullToRefresh(body, ctx) {
+    if (!('ontouchstart' in window)) return;
+    var startY = 0, pulling = false, dy = 0, busy = false, TH = 70;
+    var ind = h('div', { class: 'ptr', 'aria-hidden': 'true' }, icon('refresh'));
+    // نشانگر کنار body (نه داخلش) — صفحات با replaceChildren محتوای body را عوض می‌کنند
+    if (body.parentNode) body.parentNode.insertBefore(ind, body);
+    function setPos(px) { ind.style.transform = 'translate(-50%,' + (px - 44) + 'px) rotate(' + (px * 3) + 'deg)'; ind.style.opacity = String(Math.min(1, px / TH)); }
+    body.addEventListener('touchstart', function (e) {
+      if (busy || body.scrollTop > 0 || e.touches.length !== 1) { pulling = false; return; }
+      var tg = e.target; if (tg && tg.closest && tg.closest('textarea, input, .chat, .sheet, [data-no-pull]')) { pulling = false; return; }
+      startY = e.touches[0].clientY; pulling = true; dy = 0; ind.style.top = body.offsetTop + 'px';
+    }, { passive: true });
+    body.addEventListener('touchmove', function (e) {
+      if (!pulling) return;
+      dy = e.touches[0].clientY - startY;
+      if (dy <= 0 || body.scrollTop > 0) { dy = 0; setPos(0); return; }
+      var px = Math.min(110, dy * 0.5); ind.classList.add('show'); ind.classList.toggle('ready', px >= TH); setPos(px);
+    }, { passive: true });
+    body.addEventListener('touchend', function () {
+      if (!pulling) return; pulling = false;
+      var px = Math.min(110, dy * 0.5);
+      if (px >= TH && ctx.alive && ctx.reload) {
+        busy = true; ind.classList.add('spin'); setPos(TH); Platform.haptic('light');
+        var p; try { p = ctx.reload(); } catch (e) { p = null; }
+        Promise.resolve(p).then(fin, fin);
+      } else fin();
+      function fin() { busy = false; ind.classList.remove('show', 'ready', 'spin'); setPos(0); }
+    }, { passive: true });
+  }
 
   /* داده با کش (stale-while-revalidate) */
   function useData(ctx, key, fetcher, render, skeleton) {
@@ -1175,7 +1255,7 @@
     run();
     return run;
   }
-  function refreshMe() { return api('/me').then(function (me) { State.me = me; Cache.set('me', me); if (window.FzVip) window.FzVip.apply(me); return me; }, function () { return State.me; }); }
+  function refreshMe() { return api('/me').then(function (me) { State.me = me; Cache.set('me', me); applyVip(me); return me; }, function () { return State.me; }); }
 
   /* ===================== Shared sheets ===================== */
   function vipUpsell(reason) {
@@ -1204,7 +1284,7 @@
             infoRow('گزینهٔ ۲ — باز کردن همین یک نفر', 'پرداخت ' + fa(price) + ' تومان در چت ربات'))),
         actions: [
           { text: 'VIP می‌خواهم', icon: 'crown', onClick: function (close) { close(); Router.tab('vip'); } },
-          { text: 'باز کردن همین نفر', icon: 'unlock', onClick: function (close) { close(); Platform.openBot('reveal_' + (v.reveal_code || v.id)); } }
+          { text: 'باز کردن همین نفر', icon: 'unlock', onClick: function (close) { close(); if (v.reveal_code) Platform.openBot('reveal_' + v.reveal_code); else toast('برای این فضول لینک خرید در دسترس نیست؛ صفحه را تازه کن.', 'error'); } }
         ]
       });
       return;
@@ -1292,7 +1372,7 @@
   Router.def('home', {
     render: function (ctx) {
       ctx.header({ title: CFG.appName, subtitle: State.demo ? 'حالت دمو • داده‌های نمونه' : 'مینی‌اپ رسمی در بله', actions: [iconBtn('refresh', function () { Platform.haptic('light'); ctx.reload(); }, 'به‌روزرسانی')] });
-      useData(ctx, 'me', function () { return api('/me'); }, function (me) { State.me = me; if (window.FzVip) window.FzVip.apply(me); ctx.body.replaceChildren(HomeView(me)); }, Skel.home);
+      useData(ctx, 'me', function () { return api('/me'); }, function (me) { State.me = me; applyVip(me); ctx.body.replaceChildren(HomeView(me)); }, Skel.home);
     }
   });
   function HomeView(me) {
@@ -1838,24 +1918,63 @@
           else ctx.body.replaceChildren(chat, lockedNode || composer);
         }
         if (o.onMeta) o.onMeta(d);
-        var j = JSON.stringify(d.messages); if (j === lastJson) return; lastJson = j; messages = d.messages; paint(messages);
+        var j = JSON.stringify(d.messages); if (j === lastJson) { idleRounds++; return; } lastJson = j; idleRounds = 0; messages = d.messages; paint(messages);
       }, function (e) {
         if (!ctx.alive) return;
         if (!silent || lastJson === null) ctx.body.replaceChildren(ErrorState(e, function () { ctx.body.replaceChildren(Skel.chat()); load(); }));
       });
     }
+    /* v5.3 (D5): وضعیت ارسال — «در حال ارسال…» و در صورت خطا «ارسال نشد» + دکمهٔ تلاش دوباره
+       (قبلاً حباب حذف می‌شد و متن به کادر برمی‌گشت؛ کاربر نمی‌فهمید چه شد). */
+    var sending = false;
+    function deliver(text, b) {
+      sending = true;
+      b.classList.remove('failed'); b.classList.add('pending');
+      var st = b.querySelector('.send-state'); if (st) st.remove();
+      b.appendChild(h('div', { class: 'send-state small muted', role: 'status' }, 'در حال ارسال…'));
+      o.send(text).then(function () {
+        sending = false; idleRounds = 0;
+        var s2 = b.querySelector('.send-state'); if (s2) s2.remove();
+        lastJson = null; load(true);
+      }, function (e) {
+        sending = false;
+        b.classList.remove('pending'); b.classList.add('failed');
+        var s3 = b.querySelector('.send-state'); if (s3) s3.remove();
+        b.appendChild(h('div', { class: 'send-state small', role: 'alert' },
+          h('span', { class: 'text-danger' }, '⚠️ ارسال نشد'), ' ',
+          h('button', { class: 'btn-link', type: 'button', 'aria-label': 'تلاش دوباره برای ارسال', onclick: function () { if (!sending) deliver(text, b); } }, 'تلاش دوباره'),
+          ' · ',
+          h('button', { class: 'btn-link', type: 'button', 'aria-label': 'حذف پیام ارسال‌نشده', onclick: function () { b.remove(); } }, 'حذف')));
+        toast(errMsg(e), 'error');
+      });
+    }
     function send() {
-      var text = ta.value.trim(); if (!text) return;
+      var text = ta.value.trim(); if (!text || sending) return;   // v5.3 (D3): ضد ارسال دوباره با دابل‌تپ
       Platform.haptic('light');
       var temp = { from: o.mine, text: text, created_at: new Date().toISOString() };
       var b = bubble(temp, true); chat.appendChild(b); chat.scrollTop = chat.scrollHeight;
       ta.value = ''; ta.dispatchEvent(new Event('input'));
-      o.send(text).then(function () { lastJson = null; load(true); }, function (e) { b.remove(); ta.value = text; ta.dispatchEvent(new Event('input')); toast(errMsg(e), 'error'); });
+      deliver(text, b);
     }
+    /* v5.3 (C6): پولینگ تطبیقی — وقتی چیزی تغییر نمی‌کند فاصله تا ۴ برابر (سقف ۶۰ ثانیه) زیاد
+       می‌شود و با پیام تازه/ارسال/بازگشت به صفحه دوباره سریع می‌شود. درخواست‌های بیهوده ~۶۰٪ کمتر. */
+    var idleRounds = 0, timer = null, basePoll = o.pollMs || 15000;
+    function nextDelay() { return Math.min(60000, basePoll * Math.min(4, 1 + Math.floor(idleRounds / 2))); }
+    function schedule() {
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        if (!ctx.alive) return;
+        if (document.visibilityState === 'visible' && State.online) load(true).then(schedule, schedule);
+        else schedule();
+      }, nextDelay());
+    }
+    function onVis() { if (document.visibilityState === 'visible' && ctx.alive) { idleRounds = 0; load(true); schedule(); } }
+    document.addEventListener('visibilitychange', onVis);
+    ta.addEventListener('focus', function () { if (idleRounds > 1) { idleRounds = 0; schedule(); } });
     load();
-    var timer = setInterval(function () { if (document.visibilityState === 'visible' && State.online) load(true); }, o.pollMs || 15000);
-    ctx.onCleanup(function () { clearInterval(timer); });
-    ctx.reload = function () { lastJson = null; return load(true); };
+    schedule();
+    ctx.onCleanup(function () { clearTimeout(timer); document.removeEventListener('visibilitychange', onVis); });
+    ctx.reload = function () { lastJson = null; idleRounds = 0; return load(true); };
   }
 
   /* ===================== Page: Support ===================== */
@@ -1961,7 +2080,7 @@
   Router.def('profile', {
     render: function (ctx) {
       ctx.header({ title: 'پروفایل' });
-      useData(ctx, 'me', function () { return api('/me'); }, function (me) { State.me = me; if (window.FzVip) window.FzVip.apply(me); draw(me); }, Skel.cards);
+      useData(ctx, 'me', function () { return api('/me'); }, function (me) { State.me = me; applyVip(me); draw(me); }, Skel.cards);
       function draw(me) {
         var u = me.user, full = (u.first_name || '') + ' ' + (u.last_name || ''), w = h('div', null);
         w.appendChild(h('div', { class: 'card center', style: 'padding:22px 16px' },
@@ -2135,7 +2254,7 @@
         /* v4.6: کلید نمایش نام به کارت اطلاعات شخص (نوار پایین) منتقل شد — کارت مستقل حذف شد */
         if (!d.items.length) {
           w.appendChild(h('div', { class: 'lb-sheet' }, h('div', { class: 'lb-sheet-grip' }),
-            Empty({ icon: 'trophy', title: 'هنوز رتبه‌ای ثبت نشده', text: 'با جمع‌کردن XP از گردونه و فعالیت‌ها، خودت را بالای جدول بگذار!' })));
+            Empty({ icon: 'trophy', title: 'هنوز رتبه‌ای ثبت نشده', text: 'با جمع‌کردن XP از گردونه و فعالیت‌ها، خودت را بالای جدول بگذار!', action: { text: 'رفتن به گردونه', icon: 'bolt', onClick: function () { Router.go('wheel'); } } })));
           ctx.body.replaceChildren(w);
           return;
         }
@@ -2509,7 +2628,7 @@
         if (spinning) return;
         var w = h('div', null);
         if (d.disabled) {
-          ctx.body.replaceChildren(h('div', { class: 'card' }, Empty({ icon: 'lock', title: 'گردونه شانس فعلاً غیرفعال است', text: 'به‌زودی توسط مدیریت فعال می‌شود.' })));
+          ctx.body.replaceChildren(h('div', { class: 'card' }, Empty({ icon: 'lock', title: 'گردونه شانس فعلاً غیرفعال است', text: 'به‌زودی توسط مدیریت فعال می‌شود.' , action: { text: 'بازگشت به خانه', icon: 'home', onClick: function () { Router.tab('home'); } } })));
           return;
         }
         /* v4.7 (همگام‌سازی با پنل شیشه‌ای): چرخ شانس فقط برای VIP — همان ربات */
@@ -2881,7 +3000,7 @@
                 if (!ctx.alive) return; job = j; var c = ctx.body.querySelector('#job-card'); if (c) c.replaceWith(jobCard(j));
                 if (j.status !== 'running') { clearInterval(iv); toast('پخش همگانی تکمیل شد', 'success'); Cache.del('admin:bmeta'); job = null; setTimeout(function () { if (ctx.alive) ctx.reload(); }, 1200); }
               }, function () { /* تلاش بعدی */ });
-            }, 1500);
+            }, 3000);   // v5.3: ۱.۵←۳ ثانیه — نصف درخواست‌ها در طول پخش
             ctx.onCleanup(function () { clearInterval(iv); });
           }, function (e) { MainAction.loading(false); toast(errMsg(e), 'error'); });
         });
@@ -2894,7 +3013,7 @@
     render: function (ctx) {
       ctx.header({ title: 'صندوق پشتیبانی', actions: [iconBtn('refresh', function () { ctx.reload(); }, 'به‌روزرسانی')] });
       useData(ctx, 'admin:tickets', function () { return api('/admin/tickets'); }, function (d) {
-        if (!d.items.length) { ctx.body.replaceChildren(Empty({ icon: 'inbox', title: 'صندوق خالی است', text: 'فعلاً پیام پشتیبانی جدیدی نیست.' })); return; }
+        if (!d.items.length) { ctx.body.replaceChildren(Empty({ icon: 'inbox', title: 'صندوق خالی است', text: 'فعلاً پیام پشتیبانی جدیدی نیست.', action: { text: 'به‌روزرسانی', icon: 'refresh', onClick: function () { ctx.reload(); } } })); return; }
         ctx.body.replaceChildren(h('div', { class: 'list' }, d.items.map(function (t) {
           return ListItem({ lead: Avatar(t.name, t.user_id, { photo: t.avatar, vip: t.is_vip }), title: t.name + (t.is_vip ? ' ⚡️' : ''), sub: (t.last_from === 'admin' ? 'شما: ' : '') + t.last_text, end: h('div', { style: 'display:flex;flex-direction:column;align-items:flex-end;gap:4px' }, h('span', null, ago(t.last_at)), t.unread ? h('span', { class: 'chip danger' }, fa(t.unread)) : statusChip(t.status)), noChev: true, onClick: function () { Router.go('admin-ticket', { user_id: t.user_id, name: t.name }); } });
         })));
@@ -3383,7 +3502,7 @@
         if (fatalEl) { fatalEl.remove(); fatalEl = null; }
         api('/me').then(function (me) {
           State.me = me; Cache.set('me', me);
-          if (window.FzVip) window.FzVip.apply(me);
+          applyVip(me);
           Shell.renderNav();
           var p = Platform.startParam(), tabs = ['home', 'snoop', 'vip', 'chat', 'support', 'profile', 'admin'];
           Router.start(tabs.indexOf(p) >= 0 && (p !== 'admin' || me.is_admin) ? p : 'home');

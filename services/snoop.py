@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import settings
-from services import avatars, bale_api, db, legacy_bridge, vip
+from services import anon_refs, avatars, bale_api, db, legacy_bridge, vip
 from services.common import AppError, iso, now, tehran_day_start
 
 DEFAULT_TRAP_TITLE = "لینک اصلی من"
@@ -117,9 +117,11 @@ def visitors(owner_id: int, trap_code: str | None = None, cursor: int = 0, size:
         else:
             # v4.7 (باگ «کل فضول‌ها»): کاربر عادی فقط نام فضول را می‌بیند (بدون ماسک —
             # هم‌سو با پنل شیشه‌ای ربات)؛ نه تعداد مراجعه، نه کدام تله، نه زمان؛
-            # و هرگز شناسهٔ عددی واقعی. reveal_code = کد base62 فقط برای خرید تک‌نفره.
+            # و هرگز شناسهٔ عددی واقعی. reveal_code فقط برای خرید تک‌نفره.
+            # v5.3: کد مات HMAC (فقط برای همین صاحب تله معتبر) — base62 قبلی برگشت‌پذیر بود و
+            # شناسهٔ واقعی فضول را بدون پرداخت لو می‌داد.
             items.append({"id": f"v{i + 1}", "masked": True, "name": name,
-                          "reveal_code": legacy_bridge.encode_id(r["clicker_id"])})
+                          "reveal_code": "x" + anon_refs.make(owner_id, r["clicker_id"])})
     nxt = cursor + size
     return {"items": items, "next_cursor": str(nxt) if nxt < total else None, "total": total}
 

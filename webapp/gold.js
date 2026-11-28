@@ -209,8 +209,13 @@
   }
   var MAKERS = [makeFar, makeMid, makeSpark, makeDust];
 
+  // v5.3: سقف ۳۰ فریم بر ثانیه — روی نمایشگرهای ۹۰/۱۲۰ هرتز مصرف باتری/CPU نصف تا یک‌چهارم می‌شود
+  // و چشم در ذرات آهسته تفاوتی نمی‌بیند (dt واقعی محاسبه می‌شود، سرعت حرکت ثابت می‌ماند).
+  var FRAME_MS = 1000 / 30 - 1;
+
   function step(now) {
     if (!running || !ctx) return;
+    if (last && now - last < FRAME_MS) { raf = requestAnimationFrame(step); return; }
     var dt = Math.min(0.05, last ? (now - last) / 1000 : 0.016);
     last = now; T += dt;
     ctx.clearRect(0, 0, W, H);
@@ -355,6 +360,8 @@
       active = !!(me && me.vip && me.vip.active);
       if (!document.body) return;
       document.body.classList.toggle('is-vip', active);
+      // v5.3: برای کاربر غیرVIP هیچ کانواس/اسپرایتی ساخته نمی‌شود (قبلاً همیشه ساخته می‌شد)
+      if (!active && !canvas) return;
       if (!document.body.classList.contains('vip-booted')) {
         document.body.classList.add('vip-booted');
         ensure();

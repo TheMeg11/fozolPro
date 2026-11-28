@@ -110,8 +110,9 @@ def _notify_admin_broken(cid: str, why: str) -> None:
         if settings.ADMIN_ID:
             bale_api.send_message(
                 settings.ADMIN_ID,
-                f"⚠️ ربات نمی‌تواند اعضای کانال {cid} را بررسی کند ({why}).\n"
-                "ربات باید در کانال **ادمین** باشد. تا زمان رفع مشکل، عضویت در این کانال اجباری است.")
+                f"⚠️ ربات نمی‌تواند اعضای کانال {bale_api.escape_md(cid)} را بررسی کند ({bale_api.escape_md(why)}).\n"
+                "ربات باید در کانال *ادمین* باشد. تا زمان رفع مشکل، عضویت در این کانال اجباری است.",
+                parse_mode="Markdown")
     except Exception:
         pass
 
